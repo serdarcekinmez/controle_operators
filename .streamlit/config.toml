@@ -1,0 +1,16 @@
+# Configuration locale de Streamlit pour l'application Controle Agences.
+
+[browser]
+# N'envoie aucune statistique d'usage a l'exterieur.
+gatherUsageStats = false
+
+[server]
+# Application locale uniquement (pas d'exposition reseau).
+headless = false
+address = "localhost"
+# Taille maximale d'un fichier televerse (Mo).
+maxUploadSize = 50
+
+[theme]
+base = "light"
+primaryColor = "#1f2d3d"

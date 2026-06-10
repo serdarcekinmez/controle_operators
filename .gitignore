@@ -1,0 +1,24 @@
+# Secrets / configuration locale (NE JAMAIS versionner)
+config.json
+
+# Environnement virtuel
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Données générées localement
+data/*.db
+reports/
+uploads/
+logs/
+*.log
+
+# Divers OS / éditeurs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

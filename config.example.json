@@ -1,0 +1,7 @@
+{
+  "smtp_email": "controle.agences@gmail.com",
+  "smtp_app_password": "xxxx xxxx xxxx xxxx",
+  "recipient_email": "controle.agences@gmail.com",
+  "default_controller_name": "",
+  "default_language": "fr"
+}
