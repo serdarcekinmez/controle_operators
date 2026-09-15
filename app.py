@@ -7,10 +7,6 @@ uniquement le suivi des points de contrôle interne d'une agence.
 Flux : saisie -> génération d'UN PDF final (rapport + pièces jointes
 converties/fusionnées) -> envoi par Gmail SMTP vers la boîte partagée.
 
-Google Sheets / Drive est FACULTATIF : sans liaison configurée, ou avec
-l'interrupteur « Utiliser Google Sheets / Drive » désactivé, l'application
-fonctionne en mode local (PDF + e-mail) et les blocs Google sont masqués.
-
 Mise en page : disposition « bureau » compacte, en blocs/cartes, avec un
 choix de statut OK / Problème par point de contrôle.
 """
@@ -499,13 +495,13 @@ def _handle_drive_upload(config: dict | None) -> None:
     st.session_state["report"] = report
     if report.get("control_id") is not None:
         db_service.set_drive_url(report["control_id"], url)
-    st.success("PDF déposé sur le Drive du compte d'archivage.")
+    st.success("PDF déposé sur le Drive du compte d\'archivage.")
 
 
 # --------------------------------------------------------------------------- #
 # Consultation : construction du tableau HTML
 # --------------------------------------------------------------------------- #
-# Colonnes affichées à l'écran (les autres restent dans les exports).
+# Colonnes affichées à l\'écran (les autres restent dans les exports).
 _AUDIT_DISPLAY_COLUMNS = [
     "date_controle",
     "agence",
@@ -601,11 +597,9 @@ def _build_audit_csv(rows: list[dict]) -> bytes:
 
 
 # --------------------------------------------------------------------------- #
-# Barre latérale : configuration (légère) + mode Google + historique
+# Barre latérale : configuration (légère) + historique
 # --------------------------------------------------------------------------- #
-def _render_sidebar(config_status) -> bool:
-    """Affiche la barre latérale et retourne True si Google est utilisé."""
-    use_google = False
+def _render_sidebar(config_status) -> None:
     with st.sidebar:
         st.markdown("### Configuration")
         if config_status.ok:
@@ -614,40 +608,21 @@ def _render_sidebar(config_status) -> bool:
             st.warning("À configurer", icon="⚠️")
             st.caption(config_status.message)
 
-        st.markdown("### Google Sheets / Drive")
+        st.markdown("### Google Sheets")
         if sheets_service.is_configured(config_status.config):
-            # Choix de l'utilisateur : travailler avec ou sans son compte Google.
-            use_google = st.toggle(
-                "Utiliser Google Sheets / Drive",
-                value=bool(config_status.config.get("use_google", True)),
-                key="use_google",
-                help=(
-                    "Désactivez pour travailler uniquement en local "
-                    "(rapport PDF + e-mail), sans compte Google."
-                ),
-            )
-            if use_google:
-                pending = db_service.count_pending()
-                if pending:
-                    st.warning(f"{pending} contrôle(s) à envoyer", icon="⏳")
-                else:
-                    st.success("Tableau à jour", icon="✅")
+            pending = db_service.count_pending()
+            if pending:
+                st.warning(f"{pending} contrôle(s) à envoyer", icon="⏳")
             else:
-                st.caption(
-                    "Mode local : rapport PDF et e-mail uniquement. Les "
-                    "contrôles restent enregistrés sur ce poste et pourront "
-                    "être envoyés au tableau en réactivant Google."
-                )
+                st.success("Tableau à jour", icon="✅")
         else:
-            st.caption(
-                "Mode local (sans compte Google) : rapport PDF et e-mail "
-                "disponibles. La liaison Google est facultative (voir README)."
-            )
+            st.caption("Liaison non configurée (facultatif).")
 
         st.markdown("### Historique local")
         rows = db_service.get_recent_controls(limit=8)
         if not rows:
             st.caption("Aucun rapport enregistré pour le moment.")
+            return
         for row in rows:
             badge = "🟢" if row["email_sent"] else "⚪"
             badge += "📊" if row["sheet_synced"] else ""
@@ -655,7 +630,6 @@ def _render_sidebar(config_status) -> bool:
                 f"{badge} **{row['branch_name']}** — {row['control_date']} · "
                 f"{row['controller_name']}"
             )
-    return use_google
 
 
 # --------------------------------------------------------------------------- #
@@ -812,7 +786,7 @@ def _render_sync(config_status) -> None:
                 "« Google Sheets »)."
             )
         elif pending:
-            st.caption(f"⏳ {pending} contrôle(s) en attente d'envoi.")
+            st.caption(f"⏳ {pending} contrôle(s) en attente d\'envoi.")
         else:
             st.caption("✅ Tous les contrôles sont dans le tableau.")
 
@@ -961,7 +935,7 @@ def main() -> None:
     _inject_status_css()
 
     config_status = get_config_status()
-    use_google = _render_sidebar(config_status)
+    _render_sidebar(config_status)
 
     # En-tête
     st.title(APP_TITLE)
@@ -1028,14 +1002,10 @@ def main() -> None:
             controller, branch, control_date, observations,
             uploaded_files, config_status,
         )
-        # Blocs Google : affichés uniquement si l'utilisateur travaille avec
-        # son compte Google. Sinon, l'application reste en mode local.
-        if use_google:
-            _render_sync(config_status)
+        _render_sync(config_status)
 
     # ----- Bas de page : consultation des rapports archivés -----
-    if use_google:
-        _render_audit(config_status)
+    _render_audit(config_status)
 
 
 if __name__ == "__main__":
