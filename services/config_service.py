@@ -62,6 +62,38 @@ def load_secrets() -> dict | None:
     return secrets or None
 
 
+def save_connection(webapp_url: str, token: str) -> None:
+    """
+    Enregistre l'URL et le jeton de la passerelle dans config.json.
+
+    Les autres réglages déjà présents (SMTP, contrôleur par défaut...) sont
+    conservés : on ne réécrit que les deux clés Google.
+    """
+    config = load_config() or {}
+    config["sheets_webapp_url"] = webapp_url.strip()
+    config["sheets_token"] = token.strip()
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    logger.info("Liaison Google enregistrée dans config.json.")
+
+
+def clear_connection() -> None:
+    """Supprime la liaison Google de config.json (le reste est conservé)."""
+    config = load_config()
+    if not config:
+        return
+    config.pop("sheets_webapp_url", None)
+    config.pop("sheets_token", None)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    logger.info("Liaison Google supprimée de config.json.")
+
+
+def config_comes_from_secrets() -> bool:
+    """Vrai si la configuration active provient des Secrets Streamlit."""
+    return not CONFIG_PATH.exists() and load_secrets() is not None
+
+
 def _looks_like_placeholder(value: str) -> bool:
     """Détecte les valeurs d'exemple non remplacées."""
     lowered = value.strip().lower()
