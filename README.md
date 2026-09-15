@@ -7,8 +7,10 @@ Gmail partagée qui sert d'archive centrale.
 
 > ⚠️ Cette application ne contient **aucune donnée client**. Elle enregistre
 > uniquement si les points de contrôle interne ont été vérifiés ou non.
-> Elle fonctionne **en local** : pas de cloud, pas de serveur web, pas
-> d'exposition à internet.
+> Elle fonctionne **en local** : pas de serveur web, pas d'exposition à
+> internet. La liaison **Google Sheets / Drive** est **facultative** (voir
+> section 9) : sans elle, l'application produit le PDF et l'envoie par e-mail
+> exactement comme avant.
 
 ---
 
@@ -166,7 +168,66 @@ L'objet de l'email suit le format :
 
 ---
 
-## 9. Où sont enregistrés les fichiers
+## 9. (Facultatif) Tableau Google Sheets et Drive
+
+Cette partie est **optionnelle**. Si vous avez seulement besoin du rapport
+PDF (et de l'e-mail), ignorez-la : l'application fonctionne en **mode local**
+et les blocs Google n'apparaissent pas.
+
+### Avec ou sans compte Google
+
+- **Sans liaison configurée** : mode local automatique (PDF + e-mail).
+- **Avec liaison configurée** : un interrupteur **« Utiliser Google Sheets /
+  Drive »** apparaît dans la barre latérale. Désactivez-le pour travailler
+  sans Google ; les contrôles restent enregistrés sur le poste et pourront
+  être envoyés au tableau plus tard en le réactivant.
+- Dans `config.json`, `"use_google": false` désactive l'interrupteur par
+  défaut au démarrage.
+
+Une fois activé, vous disposez de :
+
+- **« Mettre à jour le tableau »** : envoie vers la feuille tous les contrôles
+  pas encore synchronisés (un contrôle renvoyé met sa ligne à jour, sans
+  doublon) ;
+- **« Ajouter le rapport PDF au Drive »** : dépose le PDF final dans un dossier
+  du Drive ;
+- **« Consultation des rapports »** : recherche par agence et par période,
+  export HTML ou CSV (Excel).
+
+### Mise en place (une seule fois, avec le compte Google d'archivage)
+
+1. Créez un classeur Google Sheets (ex. « Contrôles niveau 1 »).
+2. Menu **Extensions → Apps Script**. Remplacez le contenu par celui du
+   fichier `apps_script/Code.gs`, puis enregistrez.
+3. Dans l'éditeur, sélectionnez la fonction **`genererJeton`** et cliquez sur
+   **Exécuter** (autorisez l'accès demandé). Le jeton s'affiche dans le
+   journal d'exécution : copiez-le.
+4. **Déployer → Nouveau déploiement → Application web** :
+   - Exécuter en tant que : **Moi** ;
+   - Qui a accès : **Tout le monde**.
+   Copiez l'URL obtenue (elle se termine par `/exec`).
+5. Complétez `config.json` :
+
+```json
+{
+  "use_google": true,
+  "sheets_webapp_url": "https://script.google.com/macros/s/.../exec",
+  "sheets_token": "le jeton copié à l'étape 3"
+}
+```
+
+6. Relancez l'application.
+
+L'onglet « Controles » et le dossier Drive « Rapports contrôle niveau 1 »
+sont créés automatiquement au premier envoi. Seules les personnes qui ont le
+jeton peuvent lire ou écrire via la passerelle : ne le partagez pas.
+
+> Si vous modifiez `Code.gs`, pensez à **Déployer → Gérer les déploiements →
+> Modifier → Nouvelle version**, sinon l'ancienne version reste active.
+
+---
+
+## 10. Où sont enregistrés les fichiers
 
 ```
 reports/
@@ -191,7 +252,7 @@ de l'application (**« Historique local »**).
 
 ---
 
-## 10. Dépannage
+## 11. Dépannage
 
 | Problème | Solution |
 | --- | --- |
@@ -205,22 +266,28 @@ de l'application (**« Historique local »**).
 | « le port 8501 est déjà utilisé » | L'application est probablement déjà ouverte. Allez simplement sur **http://localhost:8501**, ou fermez l'ancienne fenêtre noire avant de relancer. |
 | « UNC paths are not supported » au lancement | Le dossier de l'application doit se trouver sur un disque **local Windows** (ex. `C:\Controle_Agences` ou le Bureau), et non sur un chemin réseau / `\\wsl...`. Copiez le dossier localement puis relancez `SETUP.bat`. |
 | « Streamlit n'est pas installé » | Relancez `SETUP.bat` (l'installation des dépendances a probablement échoué). |
+| Les blocs Google n'apparaissent pas | Normal en mode local. Renseignez `sheets_webapp_url` et `sheets_token` dans `config.json` et activez l'interrupteur dans la barre latérale. |
+| « Jeton invalide » | `sheets_token` dans `config.json` doit être identique à la propriété `SHEETS_TOKEN` du script. |
+| « Réponse inattendue » de la passerelle | Le déploiement doit être accessible à **Tout le monde** et l'URL se terminer par `/exec`. |
+| « Connexion à Google impossible » | Vérifiez internet / pare-feu ; les contrôles restent en attente et repartiront au prochain clic. |
 
 Pour toute erreur, le détail technique est consigné dans **`logs/app.log`**.
 
 ---
 
-## 11. Sécurité et confidentialité
+## 12. Sécurité et confidentialité
 
 - Aucun identifiant n'est écrit en dur dans le code.
 - `config.json` n'est jamais versionné (présent dans `.gitignore`).
 - Seuls les formats PDF / JPG / JPEG / PNG sont acceptés ; les noms de
   fichiers sont nettoyés.
-- L'application reste **locale** : pas de serveur web public, pas de cloud.
+- L'application reste **locale** : pas de serveur web public. Seule la
+  liaison Google (facultative) échange des données avec le compte
+  d'archivage, protégée par un jeton.
 
 ---
 
-## 12. Évolutions possibles
+## 13. Évolutions possibles
 
 - Cette version (MVP) utilise des lanceurs `.bat`. Une version future pourra
   être empaquetée en exécutable `.exe` autonome avec **PyInstaller** afin de
@@ -243,9 +310,12 @@ controle_operators/
 ├── CREATE_SHORTCUT.bat     # Crée une icône sur le Bureau (facultatif)
 ├── .streamlit/
 │   └── config.toml         # Réglages locaux de Streamlit
+├── apps_script/
+│   └── Code.gs             # Passerelle Google Sheets / Drive (facultatif)
 ├── services/
 │   ├── __init__.py
 │   ├── config_service.py   # Lecture/validation de config.json
+│   ├── sheets_service.py   # Synchronisation Google Sheets / Drive
 │   ├── pdf_service.py      # Génération PDF, conversion image, fusion
 │   ├── email_service.py    # Envoi Gmail SMTP (SSL)
 │   ├── file_service.py     # Dossiers, nettoyage de noms, sauvegardes

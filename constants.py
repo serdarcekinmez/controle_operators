@@ -119,3 +119,84 @@ SMTP_PORT = 465  # SSL
 
 # Clés obligatoires dans config.json
 REQUIRED_CONFIG_KEYS = ("smtp_email", "smtp_app_password", "recipient_email")
+
+# --------------------------------------------------------------------------- #
+# Google Sheets / Drive (passerelle Apps Script)
+# --------------------------------------------------------------------------- #
+# Ces clés sont FACULTATIVES : sans elles, l'application fonctionne exactement
+# comme avant (génération PDF + email), la synchronisation est simplement
+# désactivée dans l'interface.
+SHEETS_CONFIG_KEYS = ("sheets_webapp_url", "sheets_token")
+
+# Délai maximal d'un appel réseau vers la passerelle (secondes).
+SHEETS_TIMEOUT = 30
+SHEETS_UPLOAD_TIMEOUT = 120
+
+# Colonnes de la feuille, dans l'ordre. Doit rester identique au tableau
+# HEADERS du script Apps Script (apps_script/Code.gs).
+SHEET_COLUMNS: list[str] = [
+    "report_id",
+    "horodatage",
+    "date_controle",
+    "agence",
+    "controleur",
+    "journee_comptable",
+    "caisses",
+    "acr",
+    "affichage",
+    "affichage_obligatoire",
+    "nb_problemes",
+    "observations",
+    "fichier_pdf",
+    "lien_drive",
+    "email_envoye",
+]
+
+# Correspondance : clé technique du point de contrôle -> colonne de la feuille.
+CONTROL_KEY_TO_SHEET_COLUMN: dict[str, str] = {
+    "controle_journee_comptable": "journee_comptable",
+    "controle_caisses": "caisses",
+    "controle_acr": "acr",
+    "controle_affichage": "affichage",
+    "controle_affichage_obligatoire": "affichage_obligatoire",
+}
+
+# Libellés lisibles pour l'affichage du tableau de consultation.
+SHEET_COLUMN_LABELS: dict[str, str] = {
+    "report_id": "Réf.",
+    "horodatage": "Enregistré le",
+    "date_controle": "Date",
+    "agence": "Agence",
+    "controleur": "Contrôleur",
+    "journee_comptable": "Journée comptable",
+    "caisses": "Caisses",
+    "acr": "ACR",
+    "affichage": "Affichage",
+    "affichage_obligatoire": "Affichage obligatoire",
+    "nb_problemes": "Problèmes",
+    "observations": "Observations",
+    "fichier_pdf": "Fichier PDF",
+    "lien_drive": "Drive",
+    "email_envoye": "E-mail",
+}
+
+# Valeur inscrite dans la feuille pour un point conforme.
+SHEET_VALUE_OK = "RAS"
+SHEET_VALUE_EMPTY = "Non renseigné"
+SHEET_PROBLEM_PREFIX = "PROBLÈME"
+
+
+def sheet_cell_value(status: str | None, comment: str | None = None) -> str:
+    """
+    Valeur d'une colonne de contrôle dans la feuille.
+
+    - statut "ok"      -> "RAS"
+    - statut "problem" -> "PROBLÈME — {commentaire}"
+    - non renseigné    -> "Non renseigné"
+    """
+    if status == STATUS_OK:
+        return SHEET_VALUE_OK
+    if status == STATUS_PROBLEM:
+        detail = (comment or "").strip()
+        return f"{SHEET_PROBLEM_PREFIX} — {detail}" if detail else SHEET_PROBLEM_PREFIX
+    return SHEET_VALUE_EMPTY

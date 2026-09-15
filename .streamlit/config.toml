@@ -1,11 +1,15 @@
-# Configuration locale de Streamlit pour l'application Controle Agences.
-
-# Configuration Streamlit — compatible cloud ET local.
+# Configuration partagee Streamlit pour l'application Controle Agences.
+# Ne pas forcer ici des options de lancement purement locales : Streamlit
+# Community Cloud lit aussi ce fichier. Le script RUN_APP.bat se charge deja
+# des parametres locaux (port, ouverture du navigateur, etc.).
 
 [browser]
+# N'envoie aucune statistique d'usage a l'exterieur.
 gatherUsageStats = false
 
 [server]
+# Evite l'invite interactive "Welcome to Streamlit!" au premier lancement.
+showEmailPrompt = false
 # Taille maximale d'un fichier televerse (Mo).
 maxUploadSize = 50
 

@@ -7,13 +7,20 @@ uniquement le suivi des points de contrôle interne d'une agence.
 Flux : saisie -> génération d'UN PDF final (rapport + pièces jointes
 converties/fusionnées) -> envoi par Gmail SMTP vers la boîte partagée.
 
+Google Sheets / Drive est FACULTATIF : sans liaison configurée, ou avec
+l'interrupteur « Utiliser Google Sheets / Drive » désactivé, l'application
+fonctionne en mode local (PDF + e-mail) et les blocs Google sont masqués.
+
 Mise en page : disposition « bureau » compacte, en blocs/cartes, avec un
 choix de statut OK / Problème par point de contrôle.
 """
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import html
+import io
 
 import streamlit as st
 
@@ -23,10 +30,14 @@ from constants import (
     APP_TITLE,
     BRANCHES,
     CONTROL_ITEMS,
+    SHEET_COLUMN_LABELS,
+    SHEET_COLUMNS,
+    SHEET_PROBLEM_PREFIX,
+    SHEET_VALUE_OK,
     STATUS_OK,
     STATUS_PROBLEM,
 )
-from services import db_service
+from services import db_service, sheets_service
 from services.config_service import get_config_status
 from services.email_service import (
     EmailError,
@@ -43,6 +54,7 @@ from services.file_service import (
     save_uploaded_file,
 )
 from services.logging_service import get_logger
+from services.sheets_service import SheetsError
 from services.pdf_service import (
     Attachment,
     ReportMetadata,
@@ -61,9 +73,24 @@ _BASE_CSS = """
 /* Largeur de page agréable sur desktop */
 .block-container { max-width: 1180px; padding-top: 1.6rem; padding-bottom: 3rem; }
 
-/* Titres de section dans les cartes */
+/* Titre principal de l'application */
+h1 { color: #0f2b46 !important; font-weight: 800 !important;
+  letter-spacing: -.01em; margin-bottom: .1rem !important; }
+h1::after { content: ""; display: block; width: 92px; height: 4px;
+  margin-top: .45rem; border-radius: 3px;
+  background: linear-gradient(90deg, #1d4ed8, #6d28d9 55%, #0f766e); }
+
+/* Titres de section dans les cartes — une couleur par domaine */
 .section-title { font-size: 1.05rem; font-weight: 700; color: #1f2d3d;
-  margin: 0 0 .15rem 0; }
+  margin: 0 0 .15rem 0; padding-left: .55rem;
+  border-left: 4px solid #cbd5e1; border-radius: 2px; }
+.sec-info   { color: #1d4ed8; border-left-color: #1d4ed8; }
+.sec-ctrl   { color: #6d28d9; border-left-color: #6d28d9; }
+.sec-obs    { color: #0f766e; border-left-color: #0f766e; }
+.sec-doc    { color: #b45309; border-left-color: #b45309; }
+.sec-act    { color: #0f2b46; border-left-color: #0f2b46; }
+.sec-sync   { color: #15803d; border-left-color: #15803d; }
+.sec-audit  { color: #9d174d; border-left-color: #9d174d; }
 .section-sub { color: #6b7280; font-size: .82rem; margin: 0 0 .6rem 0; }
 
 /* Libellé d'un point de contrôle */
@@ -92,6 +119,21 @@ _BASE_CSS = """
 .config-banner { background: #fff8e1; border: 1px solid #f4d35e; color: #7a5b00;
   padding: .5rem .8rem; border-radius: .5rem; font-size: .85rem;
   margin-bottom: .8rem; }
+
+/* Tableau de consultation (audit) */
+.audit-wrap { overflow-x: auto; border: 1px solid #e2e8f0; border-radius: .5rem; }
+table.audit { border-collapse: collapse; width: 100%; font-size: .82rem; }
+table.audit thead th { background: #9d174d; color: #fff; font-weight: 600;
+  text-align: left; padding: .45rem .6rem; white-space: nowrap;
+  position: sticky; top: 0; }
+table.audit td { padding: .4rem .6rem; border-top: 1px solid #eef2f7;
+  vertical-align: top; }
+table.audit tbody tr:nth-child(even) { background: #fafbfc; }
+table.audit td.ras { color: #1a7f37; font-weight: 600; white-space: nowrap; }
+table.audit td.pb  { color: #b42318; font-weight: 600; }
+table.audit td.na  { color: #94a3b8; }
+table.audit td.num { text-align: center; font-weight: 700; }
+table.audit td.num.hot { color: #b42318; }
 
 /* Indentation du commentaire de problème */
 .problem-hint { color: #b42318; font-size: .82rem; font-weight: 600;
@@ -290,17 +332,17 @@ def _handle_generate(
                     "Sauvegarde du fichier téléversé impossible : %s", att.filename
                 )
 
-        control_id = db_service.insert_control(
-            db_service.ControlRecord(
-                branch_name=branch,
-                controller_name=controller.strip(),
-                control_date=control_date_str,
-                statuses=statuses,
-                observations=observations,
-                pdf_path=str(pdf_path),
-                problem_comments=problem_comments,
-            )
+        record = db_service.ControlRecord(
+            branch_name=branch,
+            controller_name=controller.strip(),
+            control_date=control_date_str,
+            statuses=statuses,
+            observations=observations,
+            pdf_path=str(pdf_path),
+            problem_comments=problem_comments,
         )
+        report_id = record.report_id
+        control_id = db_service.insert_control(record)
         if control_id is not None:
             for original, stored_path, file_type in stored_uploads:
                 db_service.insert_attachment(
@@ -312,6 +354,8 @@ def _handle_generate(
         "pdf_path": str(pdf_path),
         "filename": pdf_path.name,
         "control_id": control_id,
+        "report_id": report_id,
+        "drive_url": "",
         "branch": branch,
         "control_date": control_date_str,
         "controller": controller.strip(),
@@ -373,9 +417,195 @@ def _handle_send(config: dict) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Barre latérale : configuration (légère) + historique
+# Action : mettre à jour le tableau Google Sheets
 # --------------------------------------------------------------------------- #
-def _render_sidebar(config_status) -> None:
+def _handle_sync(config: dict | None) -> None:
+    """
+    Pousse vers la feuille tous les contrôles pas encore synchronisés.
+
+    Le dernier contrôle comme les précédents restés en attente (réseau
+    coupé, application fermée trop tôt) partent dans le même envoi.
+    """
+    # Le message est mis en attente (« flash ») : l'écran est rechargé juste
+    # après pour rafraîchir les compteurs, ce qui effacerait un st.success().
+    pending = db_service.get_pending_controls()
+    if not pending:
+        st.session_state["sync_flash"] = (
+            "info", "Tous les contrôles enregistrés sont déjà dans le tableau."
+        )
+        return
+
+    rows = [sheets_service.build_sheet_row(row) for row in pending]
+    with st.spinner(f"Mise à jour du tableau ({len(rows)} contrôle(s))..."):
+        try:
+            result = sheets_service.push_rows(config, rows)
+        except SheetsError as exc:
+            st.session_state["sync_flash"] = ("error", str(exc))
+            return
+        except Exception:
+            logger.exception("Échec inattendu de la synchronisation.")
+            st.session_state["sync_flash"] = (
+                "error",
+                "Une erreur inattendue est survenue pendant la mise à jour "
+                "du tableau. Consultez logs/app.log.",
+            )
+            return
+
+    db_service.mark_synced([int(row["id"]) for row in pending])
+
+    details = []
+    if result.added:
+        details.append(f"{result.added} ajouté(s)")
+    if result.updated:
+        details.append(f"{result.updated} mis à jour")
+    st.session_state["sync_flash"] = (
+        "success", "Tableau mis à jour : " + ", ".join(details) + "."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Action : déposer le PDF sur le Drive
+# --------------------------------------------------------------------------- #
+def _handle_drive_upload(config: dict | None) -> None:
+    """Dépose le PDF du rapport courant dans le Drive du compte d'archivage."""
+    report = st.session_state.get("report")
+    if not report:
+        st.error("Aucun rapport généré. Cliquez d'abord sur « Créer le rapport PDF ».")
+        return
+    if report.get("drive_url"):
+        st.info("Ce rapport est déjà déposé sur le Drive.")
+        return
+
+    with st.spinner("Dépôt du PDF sur le Drive..."):
+        try:
+            url = sheets_service.upload_pdf(
+                config,
+                report.get("report_id", ""),
+                report["filename"],
+                report["pdf_bytes"],
+            )
+        except SheetsError as exc:
+            st.error(str(exc))
+            return
+        except Exception:
+            logger.exception("Échec inattendu du dépôt Drive.")
+            st.error(
+                "Une erreur inattendue est survenue pendant le dépôt du PDF. "
+                "Consultez logs/app.log."
+            )
+            return
+
+    report["drive_url"] = url
+    st.session_state["report"] = report
+    if report.get("control_id") is not None:
+        db_service.set_drive_url(report["control_id"], url)
+    st.success("PDF déposé sur le Drive du compte d'archivage.")
+
+
+# --------------------------------------------------------------------------- #
+# Consultation : construction du tableau HTML
+# --------------------------------------------------------------------------- #
+# Colonnes affichées à l'écran (les autres restent dans les exports).
+_AUDIT_DISPLAY_COLUMNS = [
+    "date_controle",
+    "agence",
+    "controleur",
+    "journee_comptable",
+    "caisses",
+    "acr",
+    "affichage",
+    "affichage_obligatoire",
+    "nb_problemes",
+    "observations",
+    "lien_drive",
+]
+
+
+def _escape(value: str) -> str:
+    return html.escape(str(value or ""))
+
+
+def _cell(column: str, value: str) -> str:
+    """Cellule HTML avec la classe de couleur qui convient."""
+    text = str(value or "")
+    if column == "lien_drive":
+        if text.startswith("http"):
+            return f'<td><a href="{_escape(text)}" target="_blank">Ouvrir</a></td>'
+        return '<td class="na">—</td>'
+    if column == "nb_problemes":
+        hot = " hot" if text not in ("", "0") else ""
+        return f'<td class="num{hot}">{_escape(text)}</td>'
+    if text == SHEET_VALUE_OK:
+        return f'<td class="ras">{_escape(text)}</td>'
+    if text.startswith(SHEET_PROBLEM_PREFIX):
+        return f'<td class="pb">{_escape(text)}</td>'
+    if not text:
+        return '<td class="na">—</td>'
+    return f"<td>{_escape(text)}</td>"
+
+
+def _build_audit_table(rows: list[dict], columns: list[str]) -> str:
+    """Tableau HTML (fragment) des contrôles."""
+    head = "".join(
+        f"<th>{_escape(SHEET_COLUMN_LABELS.get(col, col))}</th>" for col in columns
+    )
+    body = "".join(
+        "<tr>" + "".join(_cell(col, row.get(col, "")) for col in columns) + "</tr>"
+        for row in rows
+    )
+    return (
+        '<div class="audit-wrap"><table class="audit">'
+        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
+    )
+
+
+def _build_audit_document(rows: list[dict], subtitle: str) -> str:
+    """Document HTML autonome, téléchargeable et imprimable."""
+    table = _build_audit_table(rows, SHEET_COLUMNS)
+    generated = dt.datetime.now().strftime("%d/%m/%Y à %H:%M")
+    return f"""<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8">
+<title>Rapports de contrôle niveau 1</title>
+<style>
+body {{ font-family: system-ui, Segoe UI, Arial, sans-serif; margin: 2rem;
+  color: #0f2b46; }}
+h1 {{ color: #0f2b46; margin-bottom: .2rem; }}
+p.meta {{ color: #64748b; font-size: .85rem; margin-top: 0; }}
+.audit-wrap {{ overflow-x: auto; border: 1px solid #e2e8f0; border-radius: .5rem; }}
+table.audit {{ border-collapse: collapse; width: 100%; font-size: .8rem; }}
+table.audit thead th {{ background: #9d174d; color: #fff; text-align: left;
+  padding: .45rem .6rem; white-space: nowrap; }}
+table.audit td {{ padding: .4rem .6rem; border-top: 1px solid #eef2f7;
+  vertical-align: top; }}
+table.audit tbody tr:nth-child(even) {{ background: #fafbfc; }}
+table.audit td.ras {{ color: #1a7f37; font-weight: 600; }}
+table.audit td.pb {{ color: #b42318; font-weight: 600; }}
+table.audit td.na {{ color: #94a3b8; }}
+table.audit td.num {{ text-align: center; font-weight: 700; }}
+table.audit td.num.hot {{ color: #b42318; }}
+</style></head><body>
+<h1>Rapports de contrôle niveau 1</h1>
+<p class="meta">{_escape(subtitle)} — {len(rows)} rapport(s) — édité le {generated}</p>
+{table}
+</body></html>"""
+
+
+def _build_audit_csv(rows: list[dict]) -> bytes:
+    """Export CSV ouvrable directement dans Excel (séparateur point-virgule)."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+    writer.writerow([SHEET_COLUMN_LABELS.get(col, col) for col in SHEET_COLUMNS])
+    for row in rows:
+        writer.writerow([row.get(col, "") for col in SHEET_COLUMNS])
+    return buffer.getvalue().encode("utf-8-sig")
+
+
+# --------------------------------------------------------------------------- #
+# Barre latérale : configuration (légère) + mode Google + historique
+# --------------------------------------------------------------------------- #
+def _render_sidebar(config_status) -> bool:
+    """Affiche la barre latérale et retourne True si Google est utilisé."""
+    use_google = False
     with st.sidebar:
         st.markdown("### Configuration")
         if config_status.ok:
@@ -384,17 +614,48 @@ def _render_sidebar(config_status) -> None:
             st.warning("À configurer", icon="⚠️")
             st.caption(config_status.message)
 
+        st.markdown("### Google Sheets / Drive")
+        if sheets_service.is_configured(config_status.config):
+            # Choix de l'utilisateur : travailler avec ou sans son compte Google.
+            use_google = st.toggle(
+                "Utiliser Google Sheets / Drive",
+                value=bool(config_status.config.get("use_google", True)),
+                key="use_google",
+                help=(
+                    "Désactivez pour travailler uniquement en local "
+                    "(rapport PDF + e-mail), sans compte Google."
+                ),
+            )
+            if use_google:
+                pending = db_service.count_pending()
+                if pending:
+                    st.warning(f"{pending} contrôle(s) à envoyer", icon="⏳")
+                else:
+                    st.success("Tableau à jour", icon="✅")
+            else:
+                st.caption(
+                    "Mode local : rapport PDF et e-mail uniquement. Les "
+                    "contrôles restent enregistrés sur ce poste et pourront "
+                    "être envoyés au tableau en réactivant Google."
+                )
+        else:
+            st.caption(
+                "Mode local (sans compte Google) : rapport PDF et e-mail "
+                "disponibles. La liaison Google est facultative (voir README)."
+            )
+
         st.markdown("### Historique local")
         rows = db_service.get_recent_controls(limit=8)
         if not rows:
             st.caption("Aucun rapport enregistré pour le moment.")
-            return
         for row in rows:
             badge = "🟢" if row["email_sent"] else "⚪"
+            badge += "📊" if row["sheet_synced"] else ""
             st.caption(
                 f"{badge} **{row['branch_name']}** — {row['control_date']} · "
                 f"{row['controller_name']}"
             )
+    return use_google
 
 
 # --------------------------------------------------------------------------- #
@@ -403,7 +664,7 @@ def _render_sidebar(config_status) -> None:
 def _render_control_block() -> None:
     with st.container(border=True):
         answered = sum(1 for k, _ in CONTROL_ITEMS if st.session_state.statuses.get(k))
-        st.markdown('<p class="section-title">Contrôle niveau 1</p>', unsafe_allow_html=True)
+        st.markdown('<p class="section-title sec-ctrl">Contrôle niveau 1</p>', unsafe_allow_html=True)
         st.markdown(
             '<p class="section-sub">Choisissez OK (vert) ou Problème (rouge) pour '
             "chaque point — un commentaire est requis en cas de problème. "
@@ -447,7 +708,7 @@ def _render_actions(
     config_status,
 ) -> None:
     with st.container(border=True):
-        st.markdown('<p class="section-title">Actions du rapport</p>', unsafe_allow_html=True)
+        st.markdown('<p class="section-title sec-act">Actions du rapport</p>', unsafe_allow_html=True)
 
         if st.button("🖼️ Convertir en PDF", use_container_width=True):
             _handle_convert(uploaded_files)
@@ -499,6 +760,196 @@ def _render_actions(
 
 
 # --------------------------------------------------------------------------- #
+# Bloc : Synchronisation Google Sheets / Drive
+# --------------------------------------------------------------------------- #
+def _render_sync(config_status) -> None:
+    config = config_status.config
+    linked = sheets_service.is_configured(config)
+    pending = db_service.count_pending()
+    report = st.session_state.get("report")
+
+    with st.container(border=True):
+        st.markdown(
+            '<p class="section-title sec-sync">Tableau de suivi</p>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<p class="section-sub">Google Sheets du compte d\'archivage.</p>',
+            unsafe_allow_html=True,
+        )
+
+        # Message de la dernière synchronisation (survit au rechargement).
+        flash = st.session_state.pop("sync_flash", None)
+        if flash:
+            {"success": st.success, "info": st.info, "error": st.error}[flash[0]](
+                flash[1]
+            )
+
+        label = "🔄 Mettre à jour le tableau"
+        if pending:
+            label += f" ({pending})"
+        if st.button(
+            label,
+            use_container_width=True,
+            disabled=not linked or pending == 0,
+            help="Envoie vers Google Sheets les contrôles pas encore synchronisés.",
+        ):
+            _handle_sync(config)
+            st.rerun()
+
+        drive_done = bool(report and report.get("drive_url"))
+        if st.button(
+            "☁️ Ajouter le rapport PDF au Drive",
+            use_container_width=True,
+            disabled=not linked or not report or drive_done,
+            help="Facultatif : dépose le PDF final dans le Drive du compte.",
+        ):
+            _handle_drive_upload(config)
+
+        if not linked:
+            st.caption(
+                "ℹ️ Liaison Google non configurée (voir README, section "
+                "« Google Sheets »)."
+            )
+        elif pending:
+            st.caption(f"⏳ {pending} contrôle(s) en attente d'envoi.")
+        else:
+            st.caption("✅ Tous les contrôles sont dans le tableau.")
+
+        if drive_done:
+            st.markdown(f"[📎 Voir le PDF sur le Drive]({report['drive_url']})")
+
+
+# --------------------------------------------------------------------------- #
+# Bloc : Consultation des rapports (audit)
+# --------------------------------------------------------------------------- #
+def _render_audit(config_status) -> None:
+    config = config_status.config
+    linked = sheets_service.is_configured(config)
+
+    st.markdown("---")
+    with st.container(border=True):
+        st.markdown(
+            '<p class="section-title sec-audit">Consultation des rapports</p>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<p class="section-sub">Recherche dans le tableau central : '
+            "par agence et par période.</p>",
+            unsafe_allow_html=True,
+        )
+
+        if not linked:
+            st.caption(
+                "ℹ️ La consultation nécessite la liaison Google "
+                "(voir README, section « Google Sheets »)."
+            )
+            return
+
+        today = dt.date.today()
+        c_scope, c_from, c_to = st.columns([2, 1, 1])
+        with c_scope:
+            scope = st.radio(
+                "Périmètre",
+                options=("Une agence", "Plusieurs agences", "Toutes les agences"),
+                horizontal=True,
+            )
+        with c_from:
+            date_from = st.date_input("Du", value=today.replace(day=1))
+        with c_to:
+            date_to = st.date_input("Au", value=today)
+
+        selected: list[str] = []
+        if scope == "Une agence":
+            one = st.selectbox(
+                "Agence", options=BRANCHES, index=None,
+                placeholder="Sélectionnez une agence",
+            )
+            selected = [one] if one else []
+        elif scope == "Plusieurs agences":
+            selected = st.multiselect(
+                "Agences", options=BRANCHES, placeholder="Sélectionnez les agences"
+            )
+
+        if st.button("🔍 Afficher les rapports", type="primary"):
+            if scope != "Toutes les agences" and not selected:
+                st.error("Sélectionnez au moins une agence.")
+            elif date_from > date_to:
+                st.error("La date de début est postérieure à la date de fin.")
+            else:
+                with st.spinner("Lecture du tableau..."):
+                    try:
+                        rows = sheets_service.query_rows(
+                            config,
+                            branches=selected,
+                            date_from=date_from.isoformat(),
+                            date_to=date_to.isoformat(),
+                        )
+                    except SheetsError as exc:
+                        st.error(str(exc))
+                        rows = None
+                    except Exception:
+                        logger.exception("Échec inattendu de la consultation.")
+                        st.error(
+                            "Une erreur inattendue est survenue pendant la "
+                            "lecture du tableau. Consultez logs/app.log."
+                        )
+                        rows = None
+                if rows is not None:
+                    scope_label = (
+                        "Toutes les agences"
+                        if scope == "Toutes les agences"
+                        else ", ".join(selected)
+                    )
+                    st.session_state["audit"] = {
+                        "rows": rows,
+                        "subtitle": (
+                            f"{scope_label} — du {date_from.strftime('%d/%m/%Y')} "
+                            f"au {date_to.strftime('%d/%m/%Y')}"
+                        ),
+                        "stamp": dt.datetime.now().strftime("%Y%m%d_%H%M"),
+                    }
+
+        audit = st.session_state.get("audit")
+        if not audit:
+            return
+
+        rows = audit["rows"]
+        st.caption(audit["subtitle"])
+        if not rows:
+            st.info("Aucun rapport ne correspond à ces critères.")
+            return
+
+        problems = sum(1 for row in rows if (row.get("nb_problemes") or "0") != "0")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Rapports", len(rows))
+        m2.metric("Avec problème", problems)
+        m3.metric("Agences couvertes", len({row.get("agence", "") for row in rows}))
+
+        st.markdown(
+            _build_audit_table(rows, _AUDIT_DISPLAY_COLUMNS), unsafe_allow_html=True
+        )
+
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button(
+                "⬇️ Télécharger en HTML",
+                data=_build_audit_document(rows, audit["subtitle"]).encode("utf-8"),
+                file_name=f"rapports_controle_n1_{audit['stamp']}.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+        with d2:
+            st.download_button(
+                "⬇️ Télécharger pour Excel (CSV)",
+                data=_build_audit_csv(rows),
+                file_name=f"rapports_controle_n1_{audit['stamp']}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+
+# --------------------------------------------------------------------------- #
 # Application
 # --------------------------------------------------------------------------- #
 def main() -> None:
@@ -510,7 +961,7 @@ def main() -> None:
     _inject_status_css()
 
     config_status = get_config_status()
-    _render_sidebar(config_status)
+    use_google = _render_sidebar(config_status)
 
     # En-tête
     st.title(APP_TITLE)
@@ -527,7 +978,7 @@ def main() -> None:
 
     # ----- Zone haute : Informations générales (3 colonnes) -----
     with st.container(border=True):
-        st.markdown('<p class="section-title">Informations générales</p>', unsafe_allow_html=True)
+        st.markdown('<p class="section-title sec-info">Informations générales</p>', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         with c1:
             controller = st.text_input(
@@ -550,7 +1001,7 @@ def main() -> None:
     col_obs, col_right = st.columns(2)
     with col_obs:
         with st.container(border=True):
-            st.markdown('<p class="section-title">Observations générales</p>', unsafe_allow_html=True)
+            st.markdown('<p class="section-title sec-obs">Observations générales</p>', unsafe_allow_html=True)
             st.markdown('<p class="section-sub">Facultatif</p>', unsafe_allow_html=True)
             observations = st.text_area(
                 "Observations générales",
@@ -560,7 +1011,7 @@ def main() -> None:
             )
     with col_right:
         with st.container(border=True):
-            st.markdown('<p class="section-title">Documents scannés</p>', unsafe_allow_html=True)
+            st.markdown('<p class="section-title sec-doc">Documents scannés</p>', unsafe_allow_html=True)
             st.markdown(
                 '<p class="section-sub">PDF, JPG, JPEG, PNG — les images sont '
                 "converties en PDF.</p>",
@@ -577,6 +1028,14 @@ def main() -> None:
             controller, branch, control_date, observations,
             uploaded_files, config_status,
         )
+        # Blocs Google : affichés uniquement si l'utilisateur travaille avec
+        # son compte Google. Sinon, l'application reste en mode local.
+        if use_google:
+            _render_sync(config_status)
+
+    # ----- Bas de page : consultation des rapports archivés -----
+    if use_google:
+        _render_audit(config_status)
 
 
 if __name__ == "__main__":

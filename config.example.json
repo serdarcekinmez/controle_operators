@@ -3,5 +3,9 @@
   "smtp_app_password": "xxxx xxxx xxxx xxxx",
   "recipient_email": "controle.agences@gmail.com",
   "default_controller_name": "",
-  "default_language": "fr"
+  "default_language": "fr",
+
+  "use_google": true,
+  "sheets_webapp_url": "https://script.google.com/macros/s/REMPLACEZ_PAR_VOTRE_ID/exec",
+  "sheets_token": "REMPLACEZ_PAR_UN_JETON_LONG_ET_ALEATOIRE"
 }
