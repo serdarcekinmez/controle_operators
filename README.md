@@ -225,6 +225,31 @@ jeton peuvent lire ou écrire via la passerelle : ne le partagez pas.
 > Si vous modifiez `Code.gs`, pensez à **Déployer → Gérer les déploiements →
 > Modifier → Nouvelle version**, sinon l'ancienne version reste active.
 
+### Application en ligne (Streamlit Community Cloud)
+
+En ligne, `config.json` n'existe pas (il n'est jamais envoyé sur GitHub).
+Les mêmes valeurs se saisissent dans **Settings → Secrets** de l'application,
+au format TOML :
+
+```toml
+smtp_email = "controle.agences@gmail.com"
+smtp_app_password = "abcd efgh ijkl mnop"
+recipient_email = "controle.agences@gmail.com"
+default_controller_name = ""
+
+use_google = true
+sheets_webapp_url = "https://script.google.com/macros/s/.../exec"
+sheets_token = "le jeton copié à l'étape 3"
+```
+
+Enregistrez : l'application redémarre et les lit automatiquement. Si un
+`config.json` est présent (poste local), c'est lui qui est utilisé.
+
+> ⚠️ En ligne, le disque est effacé à chaque redémarrage : téléchargez les PDF
+> et utilisez « Mettre à jour le tableau » juste après chaque contrôle.
+> Après un test, supprimez les Secrets et révoquez le mot de passe
+> d'application dans le compte Google.
+
 ---
 
 ## 10. Où sont enregistrés les fichiers

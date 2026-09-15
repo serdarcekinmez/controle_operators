@@ -1,14 +1,19 @@
 """
 Service de configuration.
 
-Charge et valide config.json. Ne contient JAMAIS de secret en dur :
-les identifiants Gmail sont lus depuis config.json (non versionné).
+Charge et valide la configuration. Ne contient JAMAIS de secret en dur :
+les identifiants sont lus, dans cet ordre, depuis :
+  1. config.json (poste local, non versionné) ;
+  2. les « Secrets » de Streamlit Community Cloud (application en ligne,
+     où config.json n'existe pas).
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+
+import streamlit as st
 
 from constants import (
     CONFIG_EXAMPLE_PATH,
@@ -44,6 +49,19 @@ def load_config() -> dict | None:
         return None
 
 
+def load_secrets() -> dict | None:
+    """
+    Lit les Secrets Streamlit (Settings > Secrets sur Community Cloud).
+
+    Retourne None s'il n'y en a pas (cas normal sur un poste local).
+    """
+    try:
+        secrets = {key: st.secrets[key] for key in st.secrets.keys()}
+    except Exception:  # aucun fichier secrets.toml / Secrets vides
+        return None
+    return secrets or None
+
+
 def _looks_like_placeholder(value: str) -> bool:
     """Détecte les valeurs d'exemple non remplacées."""
     lowered = value.strip().lower()
@@ -55,32 +73,36 @@ def _looks_like_placeholder(value: str) -> bool:
 
 def get_config_status() -> ConfigStatus:
     """
-    Vérifie la présence et la complétude de config.json.
+    Vérifie la présence et la complétude de la configuration.
 
     Retourne un ConfigStatus utilisable directement par l'UI.
     """
-    if not CONFIG_PATH.exists():
-        return ConfigStatus(
-            ok=False,
-            config=None,
-            message=(
-                "Le fichier config.json est introuvable. "
-                f"Copiez « {CONFIG_EXAMPLE_PATH.name} » en « {CONFIG_PATH.name} » "
-                "puis renseignez l'adresse Gmail et le mot de passe d'application."
-            ),
-        )
-
-    config = load_config()
-    if config is None:
-        return ConfigStatus(
-            ok=False,
-            config=None,
-            message=(
-                "Le fichier config.json est illisible ou mal formé. "
-                "Vérifiez qu'il s'agit bien d'un JSON valide "
-                f"(voir le modèle « {CONFIG_EXAMPLE_PATH.name} »)."
-            ),
-        )
+    if CONFIG_PATH.exists():
+        config = load_config()
+        if config is None:
+            return ConfigStatus(
+                ok=False,
+                config=None,
+                message=(
+                    "Le fichier config.json est illisible ou mal formé. "
+                    "Vérifiez qu'il s'agit bien d'un JSON valide "
+                    f"(voir le modèle « {CONFIG_EXAMPLE_PATH.name} »)."
+                ),
+            )
+    else:
+        config = load_secrets()
+        if config is None:
+            return ConfigStatus(
+                ok=False,
+                config=None,
+                message=(
+                    "Aucune configuration trouvée. Sur ce poste : copiez "
+                    f"« {CONFIG_EXAMPLE_PATH.name} » en « {CONFIG_PATH.name} » "
+                    "puis renseignez l'adresse Gmail et le mot de passe "
+                    "d'application. En ligne : renseignez les Secrets de "
+                    "l'application Streamlit."
+                ),
+            )
 
     # Vérification des clés obligatoires et de leur contenu.
     missing: list[str] = []
@@ -94,8 +116,8 @@ def get_config_status() -> ConfigStatus:
             ok=False,
             config=config,
             message=(
-                "La configuration est incomplète. Champs à renseigner dans "
-                f"config.json : {', '.join(missing)}. "
+                "La configuration est incomplète. Champs à renseigner : "
+                f"{', '.join(missing)}. "
                 "Pour le mot de passe, utilisez un « mot de passe d'application » "
                 "Gmail (et non votre mot de passe principal)."
             ),

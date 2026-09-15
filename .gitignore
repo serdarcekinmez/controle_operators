@@ -1,5 +1,6 @@
 # Secrets / configuration locale (NE JAMAIS versionner)
 config.json
+.streamlit/secrets.toml
 
 # Environnement virtuel
 .venv/
