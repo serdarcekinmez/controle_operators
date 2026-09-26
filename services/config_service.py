@@ -77,6 +77,39 @@ def save_connection(webapp_url: str, token: str) -> None:
     logger.info("Liaison Google enregistrée dans config.json.")
 
 
+def save_email_settings(
+    smtp_email: str, smtp_app_password: str, recipient_email: str
+) -> None:
+    """
+    Enregistre les réglages d'envoi e-mail dans config.json (créé au besoin).
+
+    Les autres réglages déjà présents (liaison Google, contrôleur par
+    défaut...) sont conservés : on ne réécrit que les trois clés e-mail.
+    """
+    config = load_config() or {}
+    config["smtp_email"] = smtp_email.strip()
+    config["smtp_app_password"] = smtp_app_password
+    config["recipient_email"] = recipient_email.strip()
+    config["use_email"] = True
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    logger.info("Réglages e-mail enregistrés dans config.json.")
+
+
+def set_email_mode(enabled: bool) -> None:
+    """
+    Active ou désactive l'envoi par e-mail sur ce poste (clé use_email).
+
+    Désactivé = « mode rapport seul » : l'application sert uniquement à
+    produire le PDF, sans compte Gmail. Les autres réglages sont conservés.
+    """
+    config = load_config() or {}
+    config["use_email"] = bool(enabled)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    logger.info("Envoi e-mail %s sur ce poste.", "activé" if enabled else "désactivé")
+
+
 def clear_connection() -> None:
     """Supprime la liaison Google de config.json (le reste est conservé)."""
     config = load_config()
@@ -128,11 +161,9 @@ def get_config_status() -> ConfigStatus:
                 ok=False,
                 config=None,
                 message=(
-                    "Aucune configuration trouvée. Sur ce poste : copiez "
-                    f"« {CONFIG_EXAMPLE_PATH.name} » en « {CONFIG_PATH.name} » "
-                    "puis renseignez l'adresse Gmail et le mot de passe "
-                    "d'application. En ligne : renseignez les Secrets de "
-                    "l'application Streamlit."
+                    "Aucune configuration trouvée. Renseignez l'adresse "
+                    "Gmail et le mot de passe d'application dans le panneau "
+                    "« Configurer l'e-mail » ci-dessous."
                 ),
             )
 
@@ -148,10 +179,8 @@ def get_config_status() -> ConfigStatus:
             ok=False,
             config=config,
             message=(
-                "La configuration est incomplète. Champs à renseigner : "
-                f"{', '.join(missing)}. "
-                "Pour le mot de passe, utilisez un « mot de passe d'application » "
-                "Gmail (et non votre mot de passe principal)."
+                "La configuration e-mail est incomplète. Complétez-la dans "
+                "le panneau « Configurer l'e-mail » ci-dessous."
             ),
         )
 
