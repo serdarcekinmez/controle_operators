@@ -28,7 +28,7 @@ from constants import (
     CONTROL_ITEMS,
     SHEET_COLUMN_LABELS,
     SHEET_COLUMNS,
-    SHEET_PROBLEM_PREFIX,
+    SHEET_PROBLEM_PREFIXES,
     SHEET_VALUE_OK,
     STATUS_OK,
     STATUS_PROBLEM,
@@ -251,7 +251,7 @@ def _handle_generate(
         st.error("Champs obligatoires manquants : " + ", ".join(errors) + ".")
         return
 
-    # --- Validation : tout "Problème" doit être commenté ---
+    # --- Validation : toute "Anomalie" doit être commentée ---
     missing_comments = [
         label
         for key, label in CONTROL_ITEMS
@@ -259,7 +259,7 @@ def _handle_generate(
     ]
     if missing_comments:
         st.error(
-            "Un commentaire est obligatoire pour chaque problème signalé : "
+            "Un commentaire est obligatoire pour chaque anomalie signalée : "
             + ", ".join(missing_comments)
             + "."
         )
@@ -510,7 +510,7 @@ _AUDIT_DISPLAY_COLUMNS = [
     "caisses",
     "acr",
     "affichage",
-    "affichage_obligatoire",
+    "cash",
     "nb_problemes",
     "observations",
     "lien_drive",
@@ -533,7 +533,7 @@ def _cell(column: str, value: str) -> str:
         return f'<td class="num{hot}">{_escape(text)}</td>'
     if text == SHEET_VALUE_OK:
         return f'<td class="ras">{_escape(text)}</td>'
-    if text.startswith(SHEET_PROBLEM_PREFIX):
+    if text.startswith(SHEET_PROBLEM_PREFIXES):
         return f'<td class="pb">{_escape(text)}</td>'
     if not text:
         return '<td class="na">—</td>'
@@ -640,8 +640,8 @@ def _render_control_block() -> None:
         answered = sum(1 for k, _ in CONTROL_ITEMS if st.session_state.statuses.get(k))
         st.markdown('<p class="section-title sec-ctrl">Contrôle niveau 1</p>', unsafe_allow_html=True)
         st.markdown(
-            '<p class="section-sub">Choisissez OK (vert) ou Problème (rouge) pour '
-            "chaque point — un commentaire est requis en cas de problème. "
+            '<p class="section-sub">Choisissez OK (vert) ou Anomalie (rouge) pour '
+            "chaque point — un commentaire est requis en cas d'anomalie. "
             f"<b>{answered}/{len(CONTROL_ITEMS)} renseigné(s)</b>.</p>",
             unsafe_allow_html=True,
         )
@@ -656,7 +656,7 @@ def _render_control_block() -> None:
                 )
             with c_pb:
                 st.button(
-                    "Problème", key=f"btn_pb_{key}", use_container_width=True,
+                    "Anomalie", key=f"btn_pb_{key}", use_container_width=True,
                     on_click=_set_status, args=(key, STATUS_PROBLEM),
                 )
             # Commentaire conditionnel, lié à ce point précis.
@@ -664,9 +664,9 @@ def _render_control_block() -> None:
                 _, c_comment = st.columns([0.3, 9.7])
                 with c_comment:
                     st.text_area(
-                        "Commentaire / détail du problème (obligatoire)",
+                        "Commentaire / détail de l'anomalie (obligatoire)",
                         key=f"comment_{key}",
-                        placeholder="Décrivez le problème constaté...",
+                        placeholder="Décrivez l'anomalie constatée...",
                     )
 
 
@@ -897,7 +897,7 @@ def _render_audit(config_status) -> None:
         problems = sum(1 for row in rows if (row.get("nb_problemes") or "0") != "0")
         m1, m2, m3 = st.columns(3)
         m1.metric("Rapports", len(rows))
-        m2.metric("Avec problème", problems)
+        m2.metric("Avec anomalie", problems)
         m3.metric("Agences couvertes", len({row.get("agence", "") for row in rows}))
 
         st.markdown(

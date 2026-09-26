@@ -75,7 +75,7 @@ CONTROL_ITEMS: list[tuple[str, str]] = [
     ("controle_caisses", "Contrôle caisses"),
     ("controle_acr", "Contrôle ACR"),
     ("controle_affichage", "Contrôle affichage"),
-    ("controle_affichage_obligatoire", "Contrôle affichage obligatoire"),
+    ("controle_cash", "Contrôle cash"),
 ]
 
 # Clés techniques uniquement (pratique pour les boucles)
@@ -84,7 +84,7 @@ CONTROL_KEYS: list[str] = [key for key, _ in CONTROL_ITEMS]
 # --------------------------------------------------------------------------- #
 # Statuts d'un point de contrôle (logique tri-état)
 #   "ok"      -> conforme (vert)
-#   "problem" -> problème constaté (rouge), commentaire requis
+#   "problem" -> anomalie constatée (rouge), commentaire requis
 #   ""/None   -> non renseigné
 # --------------------------------------------------------------------------- #
 STATUS_OK = "ok"
@@ -93,7 +93,7 @@ STATUS_PROBLEM = "problem"
 # Libellés affichés (PDF, email, UI). La clé "" couvre aussi None via .get().
 STATUS_DISPLAY: dict[str, str] = {
     STATUS_OK: "OK",
-    STATUS_PROBLEM: "Problème",
+    STATUS_PROBLEM: "Anomalie",
     "": "Non renseigné",
 }
 
@@ -144,7 +144,7 @@ SHEET_COLUMNS: list[str] = [
     "caisses",
     "acr",
     "affichage",
-    "affichage_obligatoire",
+    "cash",
     "nb_problemes",
     "observations",
     "fichier_pdf",
@@ -158,7 +158,7 @@ CONTROL_KEY_TO_SHEET_COLUMN: dict[str, str] = {
     "controle_caisses": "caisses",
     "controle_acr": "acr",
     "controle_affichage": "affichage",
-    "controle_affichage_obligatoire": "affichage_obligatoire",
+    "controle_cash": "cash",
 }
 
 # Libellés lisibles pour l'affichage du tableau de consultation.
@@ -172,8 +172,8 @@ SHEET_COLUMN_LABELS: dict[str, str] = {
     "caisses": "Caisses",
     "acr": "ACR",
     "affichage": "Affichage",
-    "affichage_obligatoire": "Affichage obligatoire",
-    "nb_problemes": "Problèmes",
+    "cash": "Cash",
+    "nb_problemes": "Anomalies",
     "observations": "Observations",
     "fichier_pdf": "Fichier PDF",
     "lien_drive": "Drive",
@@ -183,7 +183,10 @@ SHEET_COLUMN_LABELS: dict[str, str] = {
 # Valeur inscrite dans la feuille pour un point conforme.
 SHEET_VALUE_OK = "RAS"
 SHEET_VALUE_EMPTY = "Non renseigné"
-SHEET_PROBLEM_PREFIX = "PROBLÈME"
+SHEET_PROBLEM_PREFIX = "ANOMALIE"
+# Préfixe utilisé avant le passage à « Anomalie » : les anciennes lignes de la
+# feuille le portent encore, on le reconnaît toujours pour la mise en couleur.
+SHEET_PROBLEM_PREFIXES: tuple[str, ...] = (SHEET_PROBLEM_PREFIX, "PROBLÈME")
 
 
 def sheet_cell_value(status: str | None, comment: str | None = None) -> str:
@@ -191,7 +194,7 @@ def sheet_cell_value(status: str | None, comment: str | None = None) -> str:
     Valeur d'une colonne de contrôle dans la feuille.
 
     - statut "ok"      -> "RAS"
-    - statut "problem" -> "PROBLÈME — {commentaire}"
+    - statut "problem" -> "ANOMALIE — {commentaire}"
     - non renseigné    -> "Non renseigné"
     """
     if status == STATUS_OK:
