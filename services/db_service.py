@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS controls (
     controle_acr                    TEXT NOT NULL DEFAULT '',
     controle_affichage              TEXT NOT NULL DEFAULT '',
     controle_affichage_obligatoire  TEXT NOT NULL DEFAULT '',
+    controle_cash                   TEXT NOT NULL DEFAULT '',
     problem_comments                TEXT,
     observations                    TEXT,
     pdf_path                        TEXT,
@@ -93,6 +94,9 @@ _MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("sheet_synced", "INTEGER NOT NULL DEFAULT 0"),
     ("sheet_synced_at", "TEXT"),
     ("drive_url", "TEXT"),
+    # Remplace « affichage obligatoire » (ancienne colonne conservée pour
+    # l'historique, plus alimentée).
+    ("controle_cash", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -139,7 +143,7 @@ def insert_control(record: ControlRecord) -> int | None:
                     report_id, branch_name, controller_name, control_date,
                     created_at,
                     controle_journee_comptable, controle_caisses, controle_acr,
-                    controle_affichage, controle_affichage_obligatoire,
+                    controle_affichage, controle_cash,
                     problem_comments, observations, pdf_path, email_sent,
                     sheet_synced
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
@@ -154,7 +158,7 @@ def insert_control(record: ControlRecord) -> int | None:
                     record.statuses.get("controle_caisses", ""),
                     record.statuses.get("controle_acr", ""),
                     record.statuses.get("controle_affichage", ""),
-                    record.statuses.get("controle_affichage_obligatoire", ""),
+                    record.statuses.get("controle_cash", ""),
                     json.dumps(record.problem_comments, ensure_ascii=False),
                     record.observations,
                     record.pdf_path,
@@ -237,7 +241,7 @@ def get_recent_controls(limit: int = 10) -> list[sqlite3.Row]:
 _SYNC_FIELDS = """
     id, report_id, branch_name, controller_name, control_date, created_at,
     controle_journee_comptable, controle_caisses, controle_acr,
-    controle_affichage, controle_affichage_obligatoire,
+    controle_affichage, controle_cash,
     problem_comments, observations, pdf_path, email_sent, drive_url
 """
 

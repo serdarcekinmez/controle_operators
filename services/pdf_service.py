@@ -243,7 +243,7 @@ def generate_main_report_pdf(meta: ReportMetadata) -> bytes:
         if (meta.statuses.get(key) or "") == STATUS_PROBLEM
     ]
     if problems:
-        story.append(Paragraph("Problèmes signalés", section_style))
+        story.append(Paragraph("Anomalies signalées", section_style))
         for label, comment in problems:
             story.append(Paragraph(f"<b>{_escape(label)}</b>", body_style))
             text = _escape(comment) if comment else "(sans commentaire)"

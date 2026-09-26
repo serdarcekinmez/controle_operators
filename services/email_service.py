@@ -63,7 +63,7 @@ def build_body(
         if (statuses.get(key) or "") == STATUS_PROBLEM
     ]
     if problems:
-        lines += ["", "Points avec problème :"]
+        lines += ["", "Points avec anomalie :"]
         for label, comment in problems:
             lines.append(f"- {label} : {comment or '(sans commentaire)'}")
 

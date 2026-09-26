@@ -32,7 +32,7 @@ var HEADERS = [
   'caisses',
   'acr',
   'affichage',
-  'affichage_obligatoire',
+  'cash',
   'nb_problemes',
   'observations',
   'fichier_pdf',
