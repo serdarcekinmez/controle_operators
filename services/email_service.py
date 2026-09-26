@@ -78,6 +78,36 @@ def build_body(
     return "\n".join(lines)
 
 
+def test_login(smtp_email: str, smtp_app_password: str) -> None:
+    """
+    Vérifie l'adresse et le mot de passe d'application auprès de Gmail,
+    sans envoyer de message. Lève EmailError (message français) en cas
+    d'échec.
+    """
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=20) as server:
+            server.login(smtp_email, smtp_app_password)
+    except smtplib.SMTPAuthenticationError as exc:
+        logger.error("Test de connexion Gmail refusé : %s", exc)
+        raise EmailError(
+            "Gmail refuse ces identifiants. Vérifiez l'adresse et le "
+            "« mot de passe d'application » (16 lettres) — le mot de passe "
+            "habituel du compte ne fonctionne pas ici."
+        ) from exc
+    except (smtplib.SMTPException, ssl.SSLError) as exc:
+        logger.error("Erreur SMTP pendant le test : %s", exc)
+        raise EmailError(
+            "Gmail a répondu par une erreur inattendue. Réessayez plus tard."
+        ) from exc
+    except (TimeoutError, OSError) as exc:
+        logger.error("Connexion SMTP impossible pendant le test : %s", exc)
+        raise EmailError(
+            "Connexion au serveur Gmail impossible. Vérifiez la connexion "
+            "internet de ce poste."
+        ) from exc
+
+
 def send_report(
     config: dict,
     subject: str,
@@ -124,7 +154,8 @@ def send_report(
         logger.error("Authentification SMTP refusée : %s", exc)
         raise EmailError(
             "Authentification Gmail refusée. Vérifiez l'adresse et le "
-            "« mot de passe d'application » dans config.json."
+            "« mot de passe d'application » dans le panneau « Configurer "
+            "l'e-mail » (barre latérale)."
         ) from exc
     except (smtplib.SMTPException, ssl.SSLError) as exc:
         logger.error("Erreur SMTP : %s", exc)

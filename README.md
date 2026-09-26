@@ -70,30 +70,35 @@ L'opération peut prendre 1 à 2 minutes la première fois.
 
 ---
 
-## 4. Configurer l'envoi des emails (`config.json`)
+## 4. Configurer l'envoi des emails
 
-L'application a besoin d'un fichier `config.json` (jamais partagé, jamais versionné).
+Aucun fichier à modifier : tout se fait dans l'application.
 
-1. Copiez le fichier `config.example.json` et renommez la copie en `config.json`.
-2. Ouvrez `config.json` avec le Bloc-notes et renseignez :
+1. Lancez l'application (voir section 6).
+2. Dans la barre latérale, ouvrez le panneau **📧 Configurer l'e-mail**
+   (il est ouvert automatiquement tant que l'e-mail n'est pas configuré).
+3. Renseignez les informations fournies par l'administrateur :
+   - **Adresse Gmail d'envoi** : l'adresse Gmail partagée qui envoie les rapports ;
+   - **Mot de passe d'application** : 16 lettres (voir section 5) ;
+   - **Adresse de réception** : facultatif, la même adresse que l'envoi si vide.
+4. Cliquez sur **Vérifier et enregistrer**. L'application teste les
+   identifiants auprès de Gmail et ne les enregistre que s'ils fonctionnent.
 
-```json
-{
-  "smtp_email": "controle.agences@gmail.com",
-  "smtp_app_password": "xxxx xxxx xxxx xxxx",
-  "recipient_email": "controle.agences@gmail.com",
-  "default_controller_name": "",
-  "default_language": "fr"
-}
-```
-
-- `smtp_email` : l'adresse Gmail partagée qui **envoie** les rapports.
-- `smtp_app_password` : un **mot de passe d'application** Gmail (voir ci-dessous).
-- `recipient_email` : l'adresse Gmail partagée qui **reçoit** (souvent la même).
-- `default_controller_name` : nom pré-rempli au démarrage (facultatif).
+Les réglages sont enregistrés sur ce poste dans `config.json` (jamais
+partagé, jamais versionné). Ils restent modifiables à tout moment via
+**📧 Modifier les réglages e-mail**.
 
 > ❌ N'utilisez **jamais** le mot de passe principal du compte Gmail.
 > ✅ Utilisez un mot de passe d'application dédié.
+
+### Utiliser l'application sans e-mail (mode rapport seul)
+
+Pour seulement produire le rapport PDF, sans Gmail ni Google Sheets :
+cliquez sur **Continuer sans e-mail (rapport PDF seul)** sous le panneau
+de configuration. Le bouton d'envoi et les avertissements disparaissent ;
+le PDF se télécharge avec **⬇️ Télécharger le rapport** et une copie est
+enregistrée dans le dossier `reports` (classée par mois et par agence).
+L'envoi peut être activé plus tard avec **Activer l'envoi par e-mail**.
 
 ---
 
@@ -106,7 +111,7 @@ Principe général (l'interface Google peut évoluer) :
 3. Recherchez **« Mots de passe des applications »**.
 4. Générez un nouveau mot de passe d'application (16 caractères, par groupes
    de 4, par ex. `abcd efgh ijkl mnop`).
-5. Copiez-le dans `config.json`, champ `smtp_app_password`.
+5. Saisissez-le dans le panneau **📧 Configurer l'e-mail** de l'application.
 
 Ce mot de passe ne sert qu'à cette application et peut être révoqué à tout
 moment depuis le compte Google.
@@ -206,17 +211,10 @@ Une fois activé, vous disposez de :
    - Exécuter en tant que : **Moi** ;
    - Qui a accès : **Tout le monde**.
    Copiez l'URL obtenue (elle se termine par `/exec`).
-5. Complétez `config.json` :
-
-```json
-{
-  "use_google": true,
-  "sheets_webapp_url": "https://script.google.com/macros/s/.../exec",
-  "sheets_token": "le jeton copié à l'étape 3"
-}
-```
-
-6. Relancez l'application.
+5. Sur chaque poste, dans la barre latérale de l'application, panneau
+   **🔗 Se connecter** : collez l'URL (étape 4) dans « Adresse de la
+   passerelle » et le jeton (étape 3) dans « Code d'accès », puis cliquez
+   sur **Connecter**. La liaison est testée avant d'être enregistrée.
 
 L'onglet « Controles » et le dossier Drive « Rapports contrôle niveau 1 »
 sont créés automatiquement au premier envoi. Seules les personnes qui ont le
@@ -282,7 +280,7 @@ de l'application (**« Historique local »**).
 | Problème | Solution |
 | --- | --- |
 | « Python n'est pas installé » | Réinstallez Python en cochant **« Add Python to PATH »**. |
-| Bandeau « config.json introuvable » | Copiez `config.example.json` en `config.json` et remplissez-le. |
+| Bandeau « Envoi e-mail indisponible » | Renseignez le panneau **📧 Configurer l'e-mail** dans la barre latérale. |
 | « Authentification Gmail refusée » | Vérifiez l'adresse et utilisez bien un **mot de passe d'application** (pas le mot de passe principal). |
 | « Connexion au serveur Gmail impossible » | Vérifiez votre connexion internet / pare-feu d'entreprise. |
 | Une image ne s'ajoute pas au PDF | Le fichier est peut-être corrompu ; un message le signale et le détail est dans `logs/app.log`. |
@@ -291,8 +289,8 @@ de l'application (**« Historique local »**).
 | « le port 8501 est déjà utilisé » | L'application est probablement déjà ouverte. Allez simplement sur **http://localhost:8501**, ou fermez l'ancienne fenêtre noire avant de relancer. |
 | « UNC paths are not supported » au lancement | Le dossier de l'application doit se trouver sur un disque **local Windows** (ex. `C:\Controle_Agences` ou le Bureau), et non sur un chemin réseau / `\\wsl...`. Copiez le dossier localement puis relancez `SETUP.bat`. |
 | « Streamlit n'est pas installé » | Relancez `SETUP.bat` (l'installation des dépendances a probablement échoué). |
-| Les blocs Google n'apparaissent pas | Normal en mode local. Renseignez `sheets_webapp_url` et `sheets_token` dans `config.json` et activez l'interrupteur dans la barre latérale. |
-| « Jeton invalide » | `sheets_token` dans `config.json` doit être identique à la propriété `SHEETS_TOKEN` du script. |
+| Les blocs Google n'apparaissent pas | Normal en mode local. Utilisez le panneau **🔗 Se connecter** puis activez l'interrupteur dans la barre latérale. |
+| « Jeton invalide » | Le code d'accès doit être identique à la propriété `SHEETS_TOKEN` du script (attention aux espaces en trop). |
 | « Réponse inattendue » de la passerelle | Le déploiement doit être accessible à **Tout le monde** et l'URL se terminer par `/exec`. |
 | « Connexion à Google impossible » | Vérifiez internet / pare-feu ; les contrôles restent en attente et repartiront au prochain clic. |
 
