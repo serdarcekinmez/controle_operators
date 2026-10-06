@@ -942,6 +942,8 @@ def main() -> None:
     if LOGO_PATH.exists():
         logo_col, title_col = st.columns([1, 9])
         with logo_col:
+            # Décale le logo vers le bas pour qu'il ne passe pas sous la barre Streamlit.
+            st.markdown('<div style="height: 40px"></div>', unsafe_allow_html=True)
             st.image(str(LOGO_PATH), width=120)
         with title_col:
             st.title(APP_TITLE)
