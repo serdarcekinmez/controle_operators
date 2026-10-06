@@ -32,6 +32,8 @@ LOG_PATH: Path = LOGS_DIR / "app.log"
 CONFIG_PATH: Path = BASE_DIR / "config.json"
 CONFIG_EXAMPLE_PATH: Path = BASE_DIR / "config.example.json"
 
+LOGO_PATH: Path = BASE_DIR / "assets" / "logo_interchange.png"
+
 # Dossiers à créer automatiquement au démarrage.
 REQUIRED_DIRS = (DATA_DIR, REPORTS_DIR, UPLOADS_DIR, LOGS_DIR)
 
