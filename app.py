@@ -26,6 +26,7 @@ from constants import (
     APP_TITLE,
     BRANCHES,
     CONTROL_ITEMS,
+    LOGO_PATH,
     SHEET_COLUMN_LABELS,
     SHEET_COLUMNS,
     SHEET_PROBLEM_PREFIXES,
@@ -937,9 +938,17 @@ def main() -> None:
     config_status = get_config_status()
     _render_sidebar(config_status)
 
-    # En-tête
-    st.title(APP_TITLE)
-    st.caption(APP_SUBTITLE)
+    # En-tête : logo en haut à gauche, puis titre.
+    if LOGO_PATH.exists():
+        logo_col, title_col = st.columns([1, 9])
+        with logo_col:
+            st.image(str(LOGO_PATH), width=120)
+        with title_col:
+            st.title(APP_TITLE)
+            st.caption(APP_SUBTITLE)
+    else:
+        st.title(APP_TITLE)
+        st.caption(APP_SUBTITLE)
 
     # Bannière config compacte (peu intrusive) — détail complet en sidebar.
     if not config_status.ok:
