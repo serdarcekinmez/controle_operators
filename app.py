@@ -7,6 +7,10 @@ uniquement le suivi des points de contrôle interne d'une agence.
 Flux : saisie -> génération d'UN PDF final (rapport + pièces jointes
 converties/fusionnées) -> envoi par Gmail SMTP vers la boîte partagée.
 
+Google Sheets / Drive est FACULTATIF : sans liaison configurée, ou avec
+l'interrupteur « Utiliser Google Sheets / Drive » désactivé, l'application
+fonctionne en mode local (PDF + e-mail) et les blocs Google sont masqués.
+
 Mise en page : disposition « bureau » compacte, en blocs/cartes, avec un
 choix de statut OK / Problème par point de contrôle.
 """
@@ -17,6 +21,7 @@ import csv
 import datetime as dt
 import html
 import io
+import re
 
 import streamlit as st
 
@@ -35,12 +40,20 @@ from constants import (
     STATUS_PROBLEM,
 )
 from services import db_service, sheets_service
-from services.config_service import get_config_status
+from services.config_service import (
+    clear_connection,
+    config_comes_from_secrets,
+    get_config_status,
+    save_connection,
+    save_email_settings,
+    set_email_mode,
+)
 from services.email_service import (
     EmailError,
     build_body,
     build_subject,
     send_report,
+    test_login,
 )
 from services.file_service import (
     ensure_directories,
@@ -496,13 +509,13 @@ def _handle_drive_upload(config: dict | None) -> None:
     st.session_state["report"] = report
     if report.get("control_id") is not None:
         db_service.set_drive_url(report["control_id"], url)
-    st.success("PDF déposé sur le Drive du compte d\'archivage.")
+    st.success("PDF déposé sur le Drive du compte d'archivage.")
 
 
 # --------------------------------------------------------------------------- #
 # Consultation : construction du tableau HTML
 # --------------------------------------------------------------------------- #
-# Colonnes affichées à l\'écran (les autres restent dans les exports).
+# Colonnes affichées à l'écran (les autres restent dans les exports).
 _AUDIT_DISPLAY_COLUMNS = [
     "date_controle",
     "agence",
@@ -598,32 +611,295 @@ def _build_audit_csv(rows: list[dict]) -> bytes:
 
 
 # --------------------------------------------------------------------------- #
-# Barre latérale : configuration (légère) + historique
+# Panneau de connexion Google (saisie guidée, sans éditer config.json)
 # --------------------------------------------------------------------------- #
-def _render_sidebar(config_status) -> None:
+def _render_connect_panel() -> None:
+    """
+    Formulaire de liaison : l'utilisateur colle l'adresse de la passerelle et
+    le code d'accès fournis par l'administrateur de l'application.
+
+    Aucun mot de passe Google n'est demandé ni stocké : le code d'accès est
+    propre à cette application et peut être changé à tout moment.
+    """
+    if config_comes_from_secrets():
+        st.caption(
+            "Configuration fournie par les Secrets de l'hébergement "
+            "(non modifiable depuis l'application)."
+        )
+        return
+
+    with st.expander("🔗 Se connecter", expanded=False):
+        st.caption(
+            "Collez les deux informations fournies par l'administrateur. "
+            "Votre mot de passe Google n'est jamais demandé."
+        )
+        url = st.text_input(
+            "Adresse de la passerelle",
+            key="connect_url",
+            placeholder="https://script.google.com/macros/s/.../exec",
+        )
+        token = st.text_input(
+            "Code d'accès",
+            key="connect_token",
+            type="password",
+            placeholder="Code fourni par l'administrateur",
+        )
+
+        if st.button("Connecter", type="primary", use_container_width=True):
+            _handle_connect(url, token)
+
+
+def _handle_connect(url: str, token: str) -> None:
+    """Vérifie la liaison avant de l'enregistrer : pas de config non testée."""
+    url, token = url.strip(), token.strip()
+    if not url or not token:
+        st.error("Renseignez l'adresse de la passerelle et le code d'accès.")
+        return
+    if not url.startswith("https://") or not url.endswith("/exec"):
+        st.error("L'adresse doit commencer par « https:// » et se terminer par "
+            "« /exec ». Recopiez-la depuis le déploiement Apps Script.")
+        return
+
+    candidate = {"sheets_webapp_url": url, "sheets_token": token}
+    with st.spinner("Vérification de la liaison..."):
+        try:
+            sheets_service.ping(candidate)
+        except SheetsError as exc:
+            st.error(str(exc))
+            return
+        except Exception:
+            logger.exception("Échec inattendu du test de liaison.")
+            st.error("Une erreur inattendue est survenue pendant la vérification. "
+                "Consultez logs/app.log.")
+            return
+
+    try:
+        save_connection(url, token)
+    except OSError:
+        logger.exception("Écriture de config.json impossible.")
+        st.error("La liaison fonctionne mais n'a pas pu être enregistrée "
+            "(droits d'écriture sur le dossier de l'application).")
+        return
+
+    st.session_state["connect_flash"] = ("success", "Liaison établie.")
+    st.rerun()
+
+
+def _handle_disconnect() -> None:
+    try:
+        clear_connection()
+    except OSError:
+        logger.exception("Écriture de config.json impossible.")
+        st.error("Impossible de modifier config.json (droits d'écriture).")
+        return
+    st.rerun()
+
+
+# --------------------------------------------------------------------------- #
+# Panneau de configuration e-mail (saisie guidée, sans éditer config.json)
+# --------------------------------------------------------------------------- #
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _render_email_panel(config: dict | None, expanded: bool) -> None:
+    """
+    Formulaire des réglages d'envoi : adresse Gmail d'envoi, mot de passe
+    d'application et adresse de réception. Les valeurs sont testées auprès
+    de Gmail avant d'être enregistrées dans config.json.
+    """
+    config = config or {}
+    title = "📧 Configurer l'e-mail" if expanded else "📧 Modifier les réglages e-mail"
+    with st.expander(title, expanded=expanded):
+        st.caption(
+            "Informations fournies par l'administrateur. Le mot de passe "
+            "demandé est le « mot de passe d'application » Gmail "
+            "(16 lettres), pas le mot de passe habituel du compte."
+        )
+        sender = st.text_input(
+            "Adresse Gmail d'envoi",
+            value=config.get("smtp_email", "") if not _is_placeholder(config.get("smtp_email")) else "",
+            key="email_sender",
+            placeholder="exemple@gmail.com",
+        )
+        password = st.text_input(
+            "Mot de passe d'application",
+            key="email_password",
+            type="password",
+            placeholder="abcd efgh ijkl mnop",
+        )
+        recipient = st.text_input(
+            "Adresse de réception des rapports",
+            value=config.get("recipient_email", "") if not _is_placeholder(config.get("recipient_email")) else "",
+            key="email_recipient",
+            placeholder="Laisser vide = même adresse que l'envoi",
+        )
+        if st.button("Vérifier et enregistrer", type="primary", use_container_width=True):
+            _handle_email_save(sender, password, recipient)
+
+
+def _is_placeholder(value) -> bool:
+    text = str(value or "").strip().lower()
+    return not text or "xxxx" in text or text == "controle.agences@gmail.com"
+
+
+def _handle_email_save(sender: str, password: str, recipient: str) -> None:
+    """Teste les identifiants auprès de Gmail, puis les enregistre."""
+    sender = sender.strip()
+    # Google affiche le mot de passe par groupes de 4 : les espaces sont
+    # ignorés, on les retire pour éviter toute erreur de recopie.
+    password = "".join(password.split())
+    recipient = recipient.strip() or sender
+
+    if not sender or not password:
+        st.error("Renseignez l'adresse Gmail et le mot de passe d'application.")
+        return
+    for address in (sender, recipient):
+        if not _EMAIL_RE.match(address):
+            st.error(f"Adresse e-mail invalide : « {address} ».")
+            return
+    if len(password) != 16:
+        st.error("Le mot de passe d'application Gmail compte 16 lettres "
+            f"(vous en avez saisi {len(password)}).")
+        return
+
+    with st.spinner("Vérification auprès de Gmail..."):
+        try:
+            test_login(sender, password)
+        except EmailError as exc:
+            st.error(str(exc))
+            return
+        except Exception:
+            logger.exception("Échec inattendu du test Gmail.")
+            st.error("Une erreur inattendue est survenue pendant la vérification. "
+                "Consultez logs/app.log.")
+            return
+
+    try:
+        save_email_settings(sender, password, recipient)
+    except OSError:
+        logger.exception("Écriture de config.json impossible.")
+        st.error("Les identifiants sont corrects mais n'ont pas pu être enregistrés "
+            "(droits d'écriture sur le dossier de l'application).")
+        return
+
+    for key in ("email_sender", "email_password", "email_recipient"):
+        st.session_state.pop(key, None)
+    st.session_state["email_flash"] = ("success", "E-mail configuré.")
+    st.rerun()
+
+
+def _email_enabled(config_status) -> bool:
+    """False si ce poste est en « mode rapport seul » (PDF sans e-mail)."""
+    return bool((config_status.config or {}).get("use_email", True))
+
+
+def _handle_email_mode(enabled: bool) -> None:
+    try:
+        set_email_mode(enabled)
+    except OSError:
+        logger.exception("Écriture de config.json impossible.")
+        st.session_state["email_flash"] = (
+            "error", "Impossible d'enregistrer ce choix (droits d'écriture)."
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Barre latérale : configuration (légère) + mode Google + historique
+# --------------------------------------------------------------------------- #
+def _render_sidebar(config_status) -> bool:
+    """Affiche la barre latérale et retourne True si Google est utilisé."""
+    use_google = False
     with st.sidebar:
         st.markdown("### Configuration")
-        if config_status.ok:
-            st.success("E-mail prêt", icon="✅")
-        else:
-            st.warning("À configurer", icon="⚠️")
-            st.caption(config_status.message)
-
-        st.markdown("### Google Sheets")
-        if sheets_service.is_configured(config_status.config):
-            pending = db_service.count_pending()
-            if pending:
-                st.warning(f"{pending} contrôle(s) à envoyer", icon="⏳")
+        email_flash = st.session_state.pop("email_flash", None)
+        if email_flash:
+            {"success": st.success, "error": st.error}[email_flash[0]](email_flash[1])
+        if config_comes_from_secrets():
+            if config_status.ok:
+                st.success("E-mail prêt", icon="✅")
             else:
-                st.success("Tableau à jour", icon="✅")
+                st.warning("À configurer", icon="⚠️")
+                st.caption(config_status.message)
+            st.caption(
+                "Configuration fournie par les Secrets de l'hébergement "
+                "(non modifiable depuis l'application)."
+            )
+        elif not _email_enabled(config_status):
+            # Mode rapport seul : PDF uniquement, aucun compte Gmail.
+            st.info("Mode rapport seul : PDF uniquement, sans envoi e-mail.", icon="📄")
+            st.button(
+                "Activer l'envoi par e-mail",
+                use_container_width=True,
+                on_click=_handle_email_mode,
+                args=(True,),
+            )
         else:
-            st.caption("Liaison non configurée (facultatif).")
+            if config_status.ok:
+                st.success("E-mail prêt", icon="✅")
+            else:
+                st.warning("À configurer", icon="⚠️")
+                st.caption(config_status.message)
+            _render_email_panel(config_status.config, expanded=not config_status.ok)
+            if not config_status.ok:
+                st.button(
+                    "Continuer sans e-mail (rapport PDF seul)",
+                    use_container_width=True,
+                    on_click=_handle_email_mode,
+                    args=(False,),
+                    help=(
+                        "Pour utiliser l'application uniquement pour produire "
+                        "le rapport PDF. L'e-mail pourra être activé plus tard."
+                    ),
+                )
+
+        st.markdown("### Google Sheets / Drive")
+
+        # Message de la dernière tentative de liaison. Affiché ici — et non
+        # dans le panneau — car celui-ci disparaît dès que la liaison réussit.
+        flash = st.session_state.pop("connect_flash", None)
+        if flash:
+            {"success": st.success, "error": st.error}[flash[0]](flash[1])
+
+        if sheets_service.is_configured(config_status.config):
+            # Choix de l'utilisateur : travailler avec ou sans son compte Google.
+            use_google = st.toggle(
+                "Utiliser Google Sheets / Drive",
+                value=bool(config_status.config.get("use_google", True)),
+                key="use_google",
+                help=(
+                    "Désactivez pour travailler uniquement en local "
+                    "(rapport PDF + e-mail), sans compte Google."
+                ),
+            )
+            if use_google:
+                pending = db_service.count_pending()
+                if pending:
+                    st.warning(f"{pending} contrôle(s) à envoyer", icon="⏳")
+                else:
+                    st.success("Tableau à jour", icon="✅")
+            else:
+                st.caption(
+                    "Mode local : rapport PDF et e-mail uniquement. Les "
+                    "contrôles restent enregistrés sur ce poste et pourront "
+                    "être envoyés au tableau en réactivant Google."
+                )
+            st.button(
+                "Déconnecter",
+                use_container_width=True,
+                on_click=_handle_disconnect,
+                help="Oublie l'adresse et le code d'accès enregistrés sur ce poste.",
+            )
+        else:
+            st.caption(
+                "Mode local (sans compte Google) : rapport PDF et e-mail "
+                "disponibles. La liaison est facultative."
+            )
+            _render_connect_panel()
 
         st.markdown("### Historique local")
         rows = db_service.get_recent_controls(limit=8)
         if not rows:
             st.caption("Aucun rapport enregistré pour le moment.")
-            return
         for row in rows:
             badge = "🟢" if row["email_sent"] else "⚪"
             badge += "📊" if row["sheet_synced"] else ""
@@ -631,6 +907,7 @@ def _render_sidebar(config_status) -> None:
                 f"{badge} **{row['branch_name']}** — {row['control_date']} · "
                 f"{row['controller_name']}"
             )
+    return use_google
 
 
 # --------------------------------------------------------------------------- #
@@ -681,6 +958,7 @@ def _render_actions(
     observations: str,
     uploaded_files: list,
     config_status,
+    email_on: bool = True,
 ) -> None:
     with st.container(border=True):
         st.markdown('<p class="section-title sec-act">Actions du rapport</p>', unsafe_allow_html=True)
@@ -700,16 +978,17 @@ def _render_actions(
             )
 
         report = st.session_state.get("report")
-        send_disabled = (
-            not report or report.get("email_sent", False) or not config_status.ok
-        )
-        if st.button(
-            "📧 Envoyer le rapport",
-            type="primary",
-            use_container_width=True,
-            disabled=send_disabled,
-        ):
-            _handle_send(config_status.config)
+        if email_on:
+            send_disabled = (
+                not report or report.get("email_sent", False) or not config_status.ok
+            )
+            if st.button(
+                "📧 Envoyer le rapport",
+                type="primary",
+                use_container_width=True,
+                disabled=send_disabled,
+            ):
+                _handle_send(config_status.config)
 
         # Statut + téléchargement
         report = st.session_state.get("report")
@@ -724,14 +1003,23 @@ def _render_actions(
             )
             if report.get("email_sent"):
                 st.success("Statut : rapport envoyé", icon="✅")
-            else:
+            elif email_on:
                 st.info("Statut : PDF généré, non envoyé", icon="📄")
-            st.caption(f"Fichier : {report['filename']}")
+            else:
+                st.success("Statut : PDF généré", icon="📄")
+            st.caption(
+                f"Fichier : {report['filename']} — une copie est aussi "
+                "enregistrée sur ce poste, dans le dossier « reports » de "
+                "l'application (classée par mois et par agence)."
+            )
         else:
             st.caption("Aucun rapport généré pour l'instant.")
 
-        if not config_status.ok:
-            st.caption("ℹ️ L'envoi est désactivé tant que config.json n'est pas renseigné.")
+        if email_on and not config_status.ok:
+            st.caption(
+                "ℹ️ L'envoi est désactivé tant que l'e-mail n'est pas configuré "
+                "(panneau « Configurer l'e-mail » dans la barre latérale)."
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -787,7 +1075,7 @@ def _render_sync(config_status) -> None:
                 "« Google Sheets »)."
             )
         elif pending:
-            st.caption(f"⏳ {pending} contrôle(s) en attente d\'envoi.")
+            st.caption(f"⏳ {pending} contrôle(s) en attente d'envoi.")
         else:
             st.caption("✅ Tous les contrôles sont dans le tableau.")
 
@@ -936,7 +1224,7 @@ def main() -> None:
     _inject_status_css()
 
     config_status = get_config_status()
-    _render_sidebar(config_status)
+    use_google = _render_sidebar(config_status)
 
     # En-tête : logo en haut à gauche, puis titre.
     if LOGO_PATH.exists():
@@ -953,11 +1241,12 @@ def main() -> None:
         st.caption(APP_SUBTITLE)
 
     # Bannière config compacte (peu intrusive) — détail complet en sidebar.
-    if not config_status.ok:
+    email_on = _email_enabled(config_status) or config_comes_from_secrets()
+    if email_on and not config_status.ok:
         st.markdown(
             '<div class="config-banner">⚠️ Envoi e-mail indisponible : '
-            "config.json est manquant ou incomplet (voir le détail dans la "
-            "barre latérale). La génération du PDF reste possible.</div>",
+            "configurez l'e-mail dans la barre latérale (panneau « Configurer "
+            "l'e-mail »). La génération du PDF reste possible.</div>",
             unsafe_allow_html=True,
         )
 
@@ -1011,12 +1300,16 @@ def main() -> None:
 
         _render_actions(
             controller, branch, control_date, observations,
-            uploaded_files, config_status,
+            uploaded_files, config_status, email_on,
         )
-        _render_sync(config_status)
+        # Blocs Google : affichés uniquement si l'utilisateur travaille avec
+        # son compte Google. Sinon, l'application reste en mode local.
+        if use_google:
+            _render_sync(config_status)
 
     # ----- Bas de page : consultation des rapports archivés -----
-    _render_audit(config_status)
+    if use_google:
+        _render_audit(config_status)
 
 
 if __name__ == "__main__":
