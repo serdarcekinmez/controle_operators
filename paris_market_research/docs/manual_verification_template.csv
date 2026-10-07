@@ -1,0 +1,7 @@
+verification_id,business_name,category,address,arrondissement,item_to_check,source_id,source_record_ref,value_in_source,verified_value,check_method,checked_on,checked_by,status,notes
+MV-0001,<işletme adı>,bureau_de_change,<adres>,750xx,Gerçekten döviz bürosu mu (para transferi değil)?,C_osm_overpass,node/<id>,,,Saha ziyareti / web sitesi / telefon,,,Beklemede,Kategori listesi: bureau_de_change | currency_exchange_machine | atm_card_cash | atm_foreign_currency | money_transfer | hotel | travel_agency
+MV-0002,<işletme adı>,atm_card_cash,<adres>,750xx,Bankadaki atm=yes ile ayrı amenity=atm aynı makine mi?,C_osm_overpass,node/<id>,,,Saha ziyareti / sokak görüntüsü,,,Beklemede,Çifte sayım kontrolü
+MV-0003,<işletme adı>,atm_foreign_currency,<adres>,750xx,Hangi yabancı para birimlerini veriyor?,C_osm_overpass,node/<id>,currency:USD=yes,,Saha ziyareti / işletmeci,,,Beklemede,"Etiket yoksa 'bilinmiyor' yaz, 'yok' değil"
+MV-0004,<işletme adı>,bureau_de_change,<adres>,750xx,Çalışma saatleri,C_osm_overpass,node/<id>,opening_hours=…,,Web sitesi / Google Business / saha,,,Beklemede,Kontrol tarihi zorunlu
+MV-0005,<otel adı>,hotel,<adres>,750xx,Oda sayısı ve yıldız,A_atout_france,<satır no>,,,Atout France / otel sitesi,,,Beklemede,
+MV-0006,<işletme adı>,travel_agency,<adres>,750xx,BDCOM faaliyet kodu gerçekten seyahat acentesi mi?,B_apur_bdcom,<objectid>,,,Saha / web,,,Beklemede,

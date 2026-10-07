@@ -1,0 +1,4 @@
+# Büyük arşivler (IRIS konturları vb.) depoya girmesin; meta.json dosyaları girer
+data/raw/**/*.7z
+data/raw/**/*.gpkg
+__pycache__/
