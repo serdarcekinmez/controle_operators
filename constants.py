@@ -44,8 +44,10 @@ BRANCHES: list[str] = sorted(
     [
         "Argenteuil",
         "Athens",
+        "Aubervilliers",
         "Belleville",
         "Canebiere",
+        "CDG-TGV",
         "Choisy",
         "Davout",
         "Dezobry",
@@ -60,9 +62,9 @@ BRANCHES: list[str] = sorted(
         "Rennes",
         "Rivoli",
         "St Michel",
-        "Strasbourg",
         "Tolbiac",
         "Toulouse",
+        "Voltaire",
     ],
     key=str.casefold,
 )
