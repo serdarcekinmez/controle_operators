@@ -5,11 +5,13 @@ Application Streamlit LOCALE (poste de travail). Aucune donnée client :
 uniquement le suivi des points de contrôle interne d'une agence.
 
 Flux : saisie -> génération d'UN PDF final (rapport + pièces jointes
-converties/fusionnées) -> envoi par Gmail SMTP vers la boîte partagée.
+converties/fusionnées) -> ajout au fichier de contrôle Excel du contrôleur.
+L'envoi par e-mail sera branché plus tard sur Outlook / SharePoint
+(Microsoft 365) : le bouton est déjà présent, mais désactivé.
 
-Google Sheets / Drive est FACULTATIF : sans liaison configurée, ou avec
-l'interrupteur « Utiliser Google Sheets / Drive » désactivé, l'application
-fonctionne en mode local (PDF + e-mail) et les blocs Google sont masqués.
+Suivi des contrôles : chaque contrôleur conserve SON fichier Excel sur son
+poste. Il le téléverse, chaque rapport créé y est ajouté automatiquement,
+puis il le retélécharge mis à jour. Aucun compte en ligne n'est nécessaire.
 
 Mise en page : disposition « bureau » compacte, en blocs/cartes, avec un
 choix de statut OK / Problème par point de contrôle.
@@ -17,10 +19,8 @@ choix de statut OK / Problème par point de contrôle.
 
 from __future__ import annotations
 
-import csv
 import datetime as dt
 import html
-import io
 import re
 
 import streamlit as st
@@ -31,6 +31,7 @@ from constants import (
     APP_TITLE,
     BRANCHES,
     CONTROL_ITEMS,
+    EXCEL_DEFAULT_STEM,
     LOGO_PATH,
     SHEET_COLUMN_LABELS,
     SHEET_COLUMNS,
@@ -39,22 +40,8 @@ from constants import (
     STATUS_OK,
     STATUS_PROBLEM,
 )
-from services import db_service, sheets_service
-from services.config_service import (
-    clear_connection,
-    config_comes_from_secrets,
-    get_config_status,
-    save_connection,
-    save_email_settings,
-    set_email_mode,
-)
-from services.email_service import (
-    EmailError,
-    build_body,
-    build_subject,
-    send_report,
-    test_login,
-)
+from services import db_service, excel_service
+from services.config_service import load_config
 from services.file_service import (
     ensure_directories,
     get_extension,
@@ -63,8 +50,8 @@ from services.file_service import (
     save_report_pdf,
     save_uploaded_file,
 )
+from services.excel_service import ExcelError
 from services.logging_service import get_logger
-from services.sheets_service import SheetsError
 from services.pdf_service import (
     Attachment,
     ReportMetadata,
@@ -99,7 +86,7 @@ h1::after { content: ""; display: block; width: 92px; height: 4px;
 .sec-obs    { color: #0f766e; border-left-color: #0f766e; }
 .sec-doc    { color: #b45309; border-left-color: #b45309; }
 .sec-act    { color: #0f2b46; border-left-color: #0f2b46; }
-.sec-sync   { color: #15803d; border-left-color: #15803d; }
+.sec-xlsx   { color: #15803d; border-left-color: #15803d; }
 .sec-audit  { color: #9d174d; border-left-color: #9d174d; }
 .section-sub { color: #6b7280; font-size: .82rem; margin: 0 0 .6rem 0; }
 
@@ -125,11 +112,6 @@ h1::after { content: ""; display: block; width: 92px; height: 4px;
 .stTextArea textarea { field-sizing: content; min-height: 90px; max-height: 360px; }
 .st-key-observations textarea { min-height: 150px; }
 
-/* Bannière de configuration compacte */
-.config-banner { background: #fff8e1; border: 1px solid #f4d35e; color: #7a5b00;
-  padding: .5rem .8rem; border-radius: .5rem; font-size: .85rem;
-  margin-bottom: .8rem; }
-
 /* Tableau de consultation (audit) */
 .audit-wrap { overflow-x: auto; border: 1px solid #e2e8f0; border-radius: .5rem; }
 table.audit { border-collapse: collapse; width: 100%; font-size: .82rem; }
@@ -144,6 +126,19 @@ table.audit td.pb  { color: #b42318; font-weight: 600; }
 table.audit td.na  { color: #94a3b8; }
 table.audit td.num { text-align: center; font-weight: 700; }
 table.audit td.num.hot { color: #b42318; }
+
+/* Bouton « Première fois ? » (en-tête) : rouge, en gras, bien visible */
+.st-key-btn_first_excel button {
+  background: #b42318 !important; border: 1px solid #b42318 !important;
+  color: #ffffff !important; box-shadow: 0 2px 8px #b4231840;
+}
+.st-key-btn_first_excel button { height: auto !important; padding: .55rem .8rem !important; }
+.st-key-btn_first_excel button div, .st-key-btn_first_excel button p {
+  white-space: normal !important; overflow: visible !important;
+  text-overflow: clip !important; }
+.st-key-btn_first_excel button p { font-weight: 800 !important; font-size: .95rem;
+  line-height: 1.3; text-align: center; }
+.st-key-btn_first_excel button:hover { background: #912018 !important; }
 
 /* Indentation du commentaire de problème */
 .problem-hint { color: #b42318; font-size: .82rem; font-weight: 600;
@@ -359,13 +354,13 @@ def _handle_generate(
                     control_id, original, stored_path, file_type
                 )
 
-    st.session_state["report"] = {
+    report = {
         "pdf_bytes": result.pdf_bytes,
         "pdf_path": str(pdf_path),
         "filename": pdf_path.name,
         "control_id": control_id,
         "report_id": report_id,
-        "drive_url": "",
+        "created_at": dt.datetime.now().isoformat(sep=" ", timespec="minutes"),
         "branch": branch,
         "control_date": control_date_str,
         "controller": controller.strip(),
@@ -374,142 +369,109 @@ def _handle_generate(
         "observations": observations,
         "email_sent": False,
     }
-    st.success(f"PDF généré avec succès : {pdf_path.name}")
-
-
-# --------------------------------------------------------------------------- #
-# Action : envoyer le rapport
-# --------------------------------------------------------------------------- #
-def _handle_send(config: dict) -> None:
-    report = st.session_state.get("report")
-    if not report:
-        st.error("Aucun rapport généré. Cliquez d'abord sur « Créer le rapport PDF ».")
-        return
-    if report.get("email_sent"):
-        st.info("Ce rapport a déjà été envoyé.")
-        return
-
-    subject = build_subject(
-        report["branch"], report["control_date"], report["controller"]
-    )
-    body = build_body(
-        report["branch"],
-        report["control_date"],
-        report["controller"],
-        report["statuses"],
-        report["problem_comments"],
-        report["observations"],
-    )
-
-    with st.spinner("Envoi du rapport par email..."):
-        try:
-            send_report(config, subject, body, report["pdf_path"])
-        except EmailError as exc:
-            st.error(str(exc))
-            if report.get("control_id") is not None:
-                db_service.update_email_status(
-                    report["control_id"], sent=False, error=str(exc)
-                )
-            return
-        except Exception:
-            logger.exception("Échec inattendu de l'envoi email.")
-            st.error(
-                "Une erreur inattendue est survenue lors de l'envoi. "
-                "Consultez logs/app.log."
-            )
-            return
-
-    report["email_sent"] = True
     st.session_state["report"] = report
-    if report.get("control_id") is not None:
-        db_service.update_email_status(report["control_id"], sent=True)
-    st.success(f"Rapport envoyé à {config['recipient_email']}.")
+    _add_to_excel(report)
+    st.success(
+        f"PDF généré avec succès : {pdf_path.name}. Le contrôle est ajouté à "
+        "votre fichier de contrôle Excel (bloc « Fichier de contrôle Excel »)."
+    )
 
 
 # --------------------------------------------------------------------------- #
-# Action : mettre à jour le tableau Google Sheets
+# Fichier de contrôle Excel (téléversé, mis à jour, retéléchargé)
 # --------------------------------------------------------------------------- #
-def _handle_sync(config: dict | None) -> None:
-    """
-    Pousse vers la feuille tous les contrôles pas encore synchronisés.
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-    Le dernier contrôle comme les précédents restés en attente (réseau
-    coupé, application fermée trop tôt) partent dans le même envoi.
+
+def _add_to_excel(report: dict) -> None:
+    """Ajoute (ou met à jour) le contrôle dans les lignes Excel de la session."""
+    rows = st.session_state.setdefault("excel_rows", {})
+    rows[report["report_id"]] = excel_service.build_row(report)
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def _read_excel(data: bytes) -> list[dict[str, str]]:
+    return excel_service.read_rows(data)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def _merge_excel(base: bytes | None, rows: list[dict[str, str]]) -> bytes:
+    return excel_service.update_workbook(base, rows)
+
+
+def _fr_date(iso: str) -> str:
+    """AAAA-MM-JJ -> JJ/MM/AAAA (texte laissé tel quel s'il est différent)."""
+    try:
+        return dt.date.fromisoformat(iso[:10]).strftime("%d/%m/%Y")
+    except ValueError:
+        return iso
+
+
+_FORBIDDEN_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def _excel_download_name(
+    controller: str, branch: str | None, rows: list[dict[str, str]]
+) -> str:
     """
-    # Le message est mis en attente (« flash ») : l'écran est rechargé juste
-    # après pour rafraîchir les compteurs, ce qui effacerait un st.success().
-    pending = db_service.get_pending_controls()
-    if not pending:
-        st.session_state["sync_flash"] = (
-            "info", "Tous les contrôles enregistrés sont déjà dans le tableau."
+    Nom du fichier téléchargé : « Agence - AAMMJJ - Prénom.xlsx ».
+
+    - agence : celle du formulaire, sinon celle du contrôle le plus récent ;
+    - date : jour de la mise à jour du fichier (ex. 261016) ;
+    - prénom : premier mot du nom du contrôleur (« Jean Dupont » -> « Jean »).
+
+    Exemple : « Lyon - 261016 - Jean.xlsx ». Les parties inconnues sont omises.
+    """
+    if not branch and rows:
+        branch = max(
+            rows, key=lambda row: (row.get("date_controle", ""), row.get("horodatage", ""))
+        ).get("agence")
+    first_name = (controller or "").split()[0] if (controller or "").strip() else ""
+    if first_name.islower():
+        first_name = first_name.title()  # « jean-marie » -> « Jean-Marie »
+    parts =[branch or EXCEL_DEFAULT_STEM, dt.date.today().strftime("%y%m%d"), first_name]
+    parts = [_FORBIDDEN_FILENAME_CHARS.sub("", part).strip(" .") for part in parts]
+    return " - ".join(part for part in parts if part) + ".xlsx"
+
+
+def _excel_state() -> dict:
+    """
+    Fichier de contrôle à jour : fichier téléversé + contrôles de la session.
+
+    Retourne name (fichier téléversé ou None), created (nouveau fichier
+    demandé, sans fichier téléversé), error, base_count (contrôles déjà dans
+    le fichier), session_count, data (classeur à télécharger ou None) et
+    rows (ses lignes).
+    """
+    upload = st.session_state.get("xlsx_upload")
+    session_rows = list(st.session_state.get("excel_rows", {}).values())
+    state: dict = {
+        "name": upload.name if upload is not None else None,
+        "created": upload is None and st.session_state.get("xlsx_new", False),
+        "error": "",
+        "base_count": 0,
+        "session_count": len(session_rows),
+        "data": None,
+        "rows": [],
+    }
+    base = upload.getvalue() if upload is not None else None
+    if base is None and not session_rows and not state["created"]:
+        return state
+    try:
+        if base is not None:
+            state["base_count"] = len(_read_excel(base))
+        data = _merge_excel(base, session_rows)
+        state["rows"] = _read_excel(data)
+        state["data"] = data
+    except ExcelError as exc:
+        state["error"] = str(exc)
+    except Exception:
+        logger.exception("Mise à jour du fichier Excel impossible.")
+        state["error"] = (
+            "Une erreur inattendue est survenue avec le fichier Excel. "
+            "Consultez logs/app.log."
         )
-        return
-
-    rows = [sheets_service.build_sheet_row(row) for row in pending]
-    with st.spinner(f"Mise à jour du tableau ({len(rows)} contrôle(s))..."):
-        try:
-            result = sheets_service.push_rows(config, rows)
-        except SheetsError as exc:
-            st.session_state["sync_flash"] = ("error", str(exc))
-            return
-        except Exception:
-            logger.exception("Échec inattendu de la synchronisation.")
-            st.session_state["sync_flash"] = (
-                "error",
-                "Une erreur inattendue est survenue pendant la mise à jour "
-                "du tableau. Consultez logs/app.log.",
-            )
-            return
-
-    db_service.mark_synced([int(row["id"]) for row in pending])
-
-    details = []
-    if result.added:
-        details.append(f"{result.added} ajouté(s)")
-    if result.updated:
-        details.append(f"{result.updated} mis à jour")
-    st.session_state["sync_flash"] = (
-        "success", "Tableau mis à jour : " + ", ".join(details) + "."
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Action : déposer le PDF sur le Drive
-# --------------------------------------------------------------------------- #
-def _handle_drive_upload(config: dict | None) -> None:
-    """Dépose le PDF du rapport courant dans le Drive du compte d'archivage."""
-    report = st.session_state.get("report")
-    if not report:
-        st.error("Aucun rapport généré. Cliquez d'abord sur « Créer le rapport PDF ».")
-        return
-    if report.get("drive_url"):
-        st.info("Ce rapport est déjà déposé sur le Drive.")
-        return
-
-    with st.spinner("Dépôt du PDF sur le Drive..."):
-        try:
-            url = sheets_service.upload_pdf(
-                config,
-                report.get("report_id", ""),
-                report["filename"],
-                report["pdf_bytes"],
-            )
-        except SheetsError as exc:
-            st.error(str(exc))
-            return
-        except Exception:
-            logger.exception("Échec inattendu du dépôt Drive.")
-            st.error(
-                "Une erreur inattendue est survenue pendant le dépôt du PDF. "
-                "Consultez logs/app.log."
-            )
-            return
-
-    report["drive_url"] = url
-    st.session_state["report"] = report
-    if report.get("control_id") is not None:
-        db_service.set_drive_url(report["control_id"], url)
-    st.success("PDF déposé sur le Drive du compte d'archivage.")
+    return state
 
 
 # --------------------------------------------------------------------------- #
@@ -527,7 +489,6 @@ _AUDIT_DISPLAY_COLUMNS = [
     "cash",
     "nb_problemes",
     "observations",
-    "lien_drive",
 ]
 
 
@@ -538,10 +499,8 @@ def _escape(value: str) -> str:
 def _cell(column: str, value: str) -> str:
     """Cellule HTML avec la classe de couleur qui convient."""
     text = str(value or "")
-    if column == "lien_drive":
-        if text.startswith("http"):
-            return f'<td><a href="{_escape(text)}" target="_blank">Ouvrir</a></td>'
-        return '<td class="na">—</td>'
+    if column == "date_controle":
+        text = _fr_date(text)
     if column == "nb_problemes":
         hot = " hot" if text not in ("", "0") else ""
         return f'<td class="num{hot}">{_escape(text)}</td>'
@@ -600,314 +559,21 @@ table.audit td.num.hot {{ color: #b42318; }}
 </body></html>"""
 
 
-def _build_audit_csv(rows: list[dict]) -> bytes:
-    """Export CSV ouvrable directement dans Excel (séparateur point-virgule)."""
-    buffer = io.StringIO()
-    writer = csv.writer(buffer, delimiter=";", quoting=csv.QUOTE_MINIMAL)
-    writer.writerow([SHEET_COLUMN_LABELS.get(col, col) for col in SHEET_COLUMNS])
-    for row in rows:
-        writer.writerow([row.get(col, "") for col in SHEET_COLUMNS])
-    return buffer.getvalue().encode("utf-8-sig")
-
-
 # --------------------------------------------------------------------------- #
-# Panneau de connexion Google (saisie guidée, sans éditer config.json)
+# Barre latérale : historique local
 # --------------------------------------------------------------------------- #
-def _render_connect_panel() -> None:
-    """
-    Formulaire de liaison : l'utilisateur colle l'adresse de la passerelle et
-    le code d'accès fournis par l'administrateur de l'application.
-
-    Aucun mot de passe Google n'est demandé ni stocké : le code d'accès est
-    propre à cette application et peut être changé à tout moment.
-    """
-    if config_comes_from_secrets():
-        st.caption(
-            "Configuration fournie par les Secrets de l'hébergement "
-            "(non modifiable depuis l'application)."
-        )
-        return
-
-    with st.expander("🔗 Se connecter", expanded=False):
-        st.caption(
-            "Collez les deux informations fournies par l'administrateur. "
-            "Votre mot de passe Google n'est jamais demandé."
-        )
-        url = st.text_input(
-            "Adresse de la passerelle",
-            key="connect_url",
-            placeholder="https://script.google.com/macros/s/.../exec",
-        )
-        token = st.text_input(
-            "Code d'accès",
-            key="connect_token",
-            type="password",
-            placeholder="Code fourni par l'administrateur",
-        )
-
-        if st.button("Connecter", type="primary", use_container_width=True):
-            _handle_connect(url, token)
-
-
-def _handle_connect(url: str, token: str) -> None:
-    """Vérifie la liaison avant de l'enregistrer : pas de config non testée."""
-    url, token = url.strip(), token.strip()
-    if not url or not token:
-        st.error("Renseignez l'adresse de la passerelle et le code d'accès.")
-        return
-    if not url.startswith("https://") or not url.endswith("/exec"):
-        st.error("L'adresse doit commencer par « https:// » et se terminer par "
-            "« /exec ». Recopiez-la depuis le déploiement Apps Script.")
-        return
-
-    candidate = {"sheets_webapp_url": url, "sheets_token": token}
-    with st.spinner("Vérification de la liaison..."):
-        try:
-            sheets_service.ping(candidate)
-        except SheetsError as exc:
-            st.error(str(exc))
-            return
-        except Exception:
-            logger.exception("Échec inattendu du test de liaison.")
-            st.error("Une erreur inattendue est survenue pendant la vérification. "
-                "Consultez logs/app.log.")
-            return
-
-    try:
-        save_connection(url, token)
-    except OSError:
-        logger.exception("Écriture de config.json impossible.")
-        st.error("La liaison fonctionne mais n'a pas pu être enregistrée "
-            "(droits d'écriture sur le dossier de l'application).")
-        return
-
-    st.session_state["connect_flash"] = ("success", "Liaison établie.")
-    st.rerun()
-
-
-def _handle_disconnect() -> None:
-    try:
-        clear_connection()
-    except OSError:
-        logger.exception("Écriture de config.json impossible.")
-        st.error("Impossible de modifier config.json (droits d'écriture).")
-        return
-    st.rerun()
-
-
-# --------------------------------------------------------------------------- #
-# Panneau de configuration e-mail (saisie guidée, sans éditer config.json)
-# --------------------------------------------------------------------------- #
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-def _render_email_panel(config: dict | None, expanded: bool) -> None:
-    """
-    Formulaire des réglages d'envoi : adresse Gmail d'envoi, mot de passe
-    d'application et adresse de réception. Les valeurs sont testées auprès
-    de Gmail avant d'être enregistrées dans config.json.
-    """
-    config = config or {}
-    title = "📧 Configurer l'e-mail" if expanded else "📧 Modifier les réglages e-mail"
-    with st.expander(title, expanded=expanded):
-        st.caption(
-            "Informations fournies par l'administrateur. Le mot de passe "
-            "demandé est le « mot de passe d'application » Gmail "
-            "(16 lettres), pas le mot de passe habituel du compte."
-        )
-        sender = st.text_input(
-            "Adresse Gmail d'envoi",
-            value=config.get("smtp_email", "") if not _is_placeholder(config.get("smtp_email")) else "",
-            key="email_sender",
-            placeholder="exemple@gmail.com",
-        )
-        password = st.text_input(
-            "Mot de passe d'application",
-            key="email_password",
-            type="password",
-            placeholder="abcd efgh ijkl mnop",
-        )
-        recipient = st.text_input(
-            "Adresse de réception des rapports",
-            value=config.get("recipient_email", "") if not _is_placeholder(config.get("recipient_email")) else "",
-            key="email_recipient",
-            placeholder="Laisser vide = même adresse que l'envoi",
-        )
-        if st.button("Vérifier et enregistrer", type="primary", use_container_width=True):
-            _handle_email_save(sender, password, recipient)
-
-
-def _is_placeholder(value) -> bool:
-    text = str(value or "").strip().lower()
-    return not text or "xxxx" in text or text == "controle.agences@gmail.com"
-
-
-def _handle_email_save(sender: str, password: str, recipient: str) -> None:
-    """Teste les identifiants auprès de Gmail, puis les enregistre."""
-    sender = sender.strip()
-    # Google affiche le mot de passe par groupes de 4 : les espaces sont
-    # ignorés, on les retire pour éviter toute erreur de recopie.
-    password = "".join(password.split())
-    recipient = recipient.strip() or sender
-
-    if not sender or not password:
-        st.error("Renseignez l'adresse Gmail et le mot de passe d'application.")
-        return
-    for address in (sender, recipient):
-        if not _EMAIL_RE.match(address):
-            st.error(f"Adresse e-mail invalide : « {address} ».")
-            return
-    if len(password) != 16:
-        st.error("Le mot de passe d'application Gmail compte 16 lettres "
-            f"(vous en avez saisi {len(password)}).")
-        return
-
-    with st.spinner("Vérification auprès de Gmail..."):
-        try:
-            test_login(sender, password)
-        except EmailError as exc:
-            st.error(str(exc))
-            return
-        except Exception:
-            logger.exception("Échec inattendu du test Gmail.")
-            st.error("Une erreur inattendue est survenue pendant la vérification. "
-                "Consultez logs/app.log.")
-            return
-
-    try:
-        save_email_settings(sender, password, recipient)
-    except OSError:
-        logger.exception("Écriture de config.json impossible.")
-        st.error("Les identifiants sont corrects mais n'ont pas pu être enregistrés "
-            "(droits d'écriture sur le dossier de l'application).")
-        return
-
-    for key in ("email_sender", "email_password", "email_recipient"):
-        st.session_state.pop(key, None)
-    st.session_state["email_flash"] = ("success", "E-mail configuré.")
-    st.rerun()
-
-
-def _email_enabled(config_status) -> bool:
-    """False si ce poste est en « mode rapport seul » (PDF sans e-mail)."""
-    return bool((config_status.config or {}).get("use_email", True))
-
-
-def _handle_email_mode(enabled: bool) -> None:
-    try:
-        set_email_mode(enabled)
-    except OSError:
-        logger.exception("Écriture de config.json impossible.")
-        st.session_state["email_flash"] = (
-            "error", "Impossible d'enregistrer ce choix (droits d'écriture)."
-        )
-
-
-# --------------------------------------------------------------------------- #
-# Barre latérale : configuration (légère) + mode Google + historique
-# --------------------------------------------------------------------------- #
-def _render_sidebar(config_status) -> bool:
-    """Affiche la barre latérale et retourne True si Google est utilisé."""
-    use_google = False
+def _render_sidebar() -> None:
+    """Affiche la barre latérale : derniers rapports créés sur ce poste."""
     with st.sidebar:
-        st.markdown("### Configuration")
-        email_flash = st.session_state.pop("email_flash", None)
-        if email_flash:
-            {"success": st.success, "error": st.error}[email_flash[0]](email_flash[1])
-        if config_comes_from_secrets():
-            if config_status.ok:
-                st.success("E-mail prêt", icon="✅")
-            else:
-                st.warning("À configurer", icon="⚠️")
-                st.caption(config_status.message)
-            st.caption(
-                "Configuration fournie par les Secrets de l'hébergement "
-                "(non modifiable depuis l'application)."
-            )
-        elif not _email_enabled(config_status):
-            # Mode rapport seul : PDF uniquement, aucun compte Gmail.
-            st.info("Mode rapport seul : PDF uniquement, sans envoi e-mail.", icon="📄")
-            st.button(
-                "Activer l'envoi par e-mail",
-                use_container_width=True,
-                on_click=_handle_email_mode,
-                args=(True,),
-            )
-        else:
-            if config_status.ok:
-                st.success("E-mail prêt", icon="✅")
-            else:
-                st.warning("À configurer", icon="⚠️")
-                st.caption(config_status.message)
-            _render_email_panel(config_status.config, expanded=not config_status.ok)
-            if not config_status.ok:
-                st.button(
-                    "Continuer sans e-mail (rapport PDF seul)",
-                    use_container_width=True,
-                    on_click=_handle_email_mode,
-                    args=(False,),
-                    help=(
-                        "Pour utiliser l'application uniquement pour produire "
-                        "le rapport PDF. L'e-mail pourra être activé plus tard."
-                    ),
-                )
-
-        st.markdown("### Google Sheets / Drive")
-
-        # Message de la dernière tentative de liaison. Affiché ici — et non
-        # dans le panneau — car celui-ci disparaît dès que la liaison réussit.
-        flash = st.session_state.pop("connect_flash", None)
-        if flash:
-            {"success": st.success, "error": st.error}[flash[0]](flash[1])
-
-        if sheets_service.is_configured(config_status.config):
-            # Choix de l'utilisateur : travailler avec ou sans son compte Google.
-            use_google = st.toggle(
-                "Utiliser Google Sheets / Drive",
-                value=bool(config_status.config.get("use_google", True)),
-                key="use_google",
-                help=(
-                    "Désactivez pour travailler uniquement en local "
-                    "(rapport PDF + e-mail), sans compte Google."
-                ),
-            )
-            if use_google:
-                pending = db_service.count_pending()
-                if pending:
-                    st.warning(f"{pending} contrôle(s) à envoyer", icon="⏳")
-                else:
-                    st.success("Tableau à jour", icon="✅")
-            else:
-                st.caption(
-                    "Mode local : rapport PDF et e-mail uniquement. Les "
-                    "contrôles restent enregistrés sur ce poste et pourront "
-                    "être envoyés au tableau en réactivant Google."
-                )
-            st.button(
-                "Déconnecter",
-                use_container_width=True,
-                on_click=_handle_disconnect,
-                help="Oublie l'adresse et le code d'accès enregistrés sur ce poste.",
-            )
-        else:
-            st.caption(
-                "Mode local (sans compte Google) : rapport PDF et e-mail "
-                "disponibles. La liaison est facultative."
-            )
-            _render_connect_panel()
-
         st.markdown("### Historique local")
         rows = db_service.get_recent_controls(limit=8)
         if not rows:
             st.caption("Aucun rapport enregistré pour le moment.")
         for row in rows:
-            badge = "🟢" if row["email_sent"] else "⚪"
-            badge += "📊" if row["sheet_synced"] else ""
             st.caption(
-                f"{badge} **{row['branch_name']}** — {row['control_date']} · "
+                f"📄 **{row['branch_name']}** — {row['control_date']} · "
                 f"{row['controller_name']}"
             )
-    return use_google
 
 
 # --------------------------------------------------------------------------- #
@@ -957,8 +623,6 @@ def _render_actions(
     control_date: dt.date,
     observations: str,
     uploaded_files: list,
-    config_status,
-    email_on: bool = True,
 ) -> None:
     with st.container(border=True):
         st.markdown('<p class="section-title sec-act">Actions du rapport</p>', unsafe_allow_html=True)
@@ -977,18 +641,14 @@ def _render_actions(
                 uploaded_files=uploaded_files,
             )
 
-        report = st.session_state.get("report")
-        if email_on:
-            send_disabled = (
-                not report or report.get("email_sent", False) or not config_status.ok
-            )
-            if st.button(
-                "📧 Envoyer le rapport",
-                type="primary",
-                use_container_width=True,
-                disabled=send_disabled,
-            ):
-                _handle_send(config_status.config)
+        # Emplacement réservé : l'envoi sera branché sur Outlook / SharePoint
+        # (comptes Microsoft 365 des agences et des directions).
+        st.button(
+            "📧 Envoyer le rapport",
+            use_container_width=True,
+            disabled=True,
+            help="Bientôt disponible : envoi par Outlook (Microsoft 365).",
+        )
 
         # Statut + téléchargement
         report = st.session_state.get("report")
@@ -1001,12 +661,7 @@ def _render_actions(
                 mime="application/pdf",
                 use_container_width=True,
             )
-            if report.get("email_sent"):
-                st.success("Statut : rapport envoyé", icon="✅")
-            elif email_on:
-                st.info("Statut : PDF généré, non envoyé", icon="📄")
-            else:
-                st.success("Statut : PDF généré", icon="📄")
+            st.success("Statut : PDF généré", icon="📄")
             st.caption(
                 f"Fichier : {report['filename']} — une copie est aussi "
                 "enregistrée sur ce poste, dans le dossier « reports » de "
@@ -1015,81 +670,156 @@ def _render_actions(
         else:
             st.caption("Aucun rapport généré pour l'instant.")
 
-        if email_on and not config_status.ok:
-            st.caption(
-                "ℹ️ L'envoi est désactivé tant que l'e-mail n'est pas configuré "
-                "(panneau « Configurer l'e-mail » dans la barre latérale)."
-            )
+        st.caption("ℹ️ Envoi par e-mail (Outlook) : bientôt disponible.")
 
 
 # --------------------------------------------------------------------------- #
-# Bloc : Synchronisation Google Sheets / Drive
+# En-tête : création du premier fichier Excel
 # --------------------------------------------------------------------------- #
-def _render_sync(config_status) -> None:
-    config = config_status.config
-    linked = sheets_service.is_configured(config)
-    pending = db_service.count_pending()
-    report = st.session_state.get("report")
+def _render_first_time_button() -> None:
+    """
+    Bouton rouge « Première fois ? », en haut à droite de la page.
 
+    Volontairement séparé des blocs d'opérations (PDF / Excel) pour ne pas
+    être confondu avec eux. Masqué dès qu'un fichier est chargé ou créé.
+    """
+    if st.session_state.get("xlsx_upload") is not None or st.session_state.get("xlsx_new"):
+        return
+    st.markdown('<div style="height: 40px"></div>', unsafe_allow_html=True)
+    st.button(
+        "🆕 Première fois ? Créez votre 1er fichier Excel en cliquant ici",
+        key="btn_first_excel",
+        use_container_width=True,
+        on_click=st.session_state.update,
+        kwargs={"xlsx_new": True},
+        help=(
+            "Crée un fichier de contrôle Excel vide. Vos rapports y seront "
+            "ajoutés ; téléchargez-le ensuite (bloc « Fichier de contrôle "
+            "Excel », en bas à droite) et rechargez-le aux prochains contrôles."
+        ),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Bloc : Fichier de contrôle Excel
+# --------------------------------------------------------------------------- #
+def _render_excel(controller: str, branch: str | None) -> None:
     with st.container(border=True):
         st.markdown(
-            '<p class="section-title sec-sync">Tableau de suivi</p>',
+            '<p class="section-title sec-xlsx">Fichier de contrôle Excel</p>',
             unsafe_allow_html=True,
         )
         st.markdown(
-            '<p class="section-sub">Google Sheets du compte d\'archivage.</p>',
+            '<p class="section-sub">Chargez votre fichier : chaque rapport créé '
+            "y est ajouté automatiquement (trié par date). Téléchargez-le "
+            "ensuite pour le conserver sur votre poste.</p>",
             unsafe_allow_html=True,
         )
+        st.file_uploader(
+            "Mettre à jour votre fichier de contrôle",
+            type=["xlsx"],
+            key="xlsx_upload",
+            help=(
+                "Le fichier Excel (.xlsx) téléchargé lors de votre dernier "
+                "contrôle. Première fois : utilisez le bouton rouge en haut "
+                "à droite de la page."
+            ),
+        )
 
-        # Message de la dernière synchronisation (survit au rechargement).
-        flash = st.session_state.pop("sync_flash", None)
-        if flash:
-            {"success": st.success, "info": st.info, "error": st.error}[flash[0]](
-                flash[1]
-            )
+        state = _excel_state()
+        if state["error"]:
+            st.error(state["error"])
+            return
 
-        label = "🔄 Mettre à jour le tableau"
-        if pending:
-            label += f" ({pending})"
-        if st.button(
-            label,
-            use_container_width=True,
-            disabled=not linked or pending == 0,
-            help="Envoie vers Google Sheets les contrôles pas encore synchronisés.",
-        ):
-            _handle_sync(config)
-            st.rerun()
-
-        drive_done = bool(report and report.get("drive_url"))
-        if st.button(
-            "☁️ Ajouter le rapport PDF au Drive",
-            use_container_width=True,
-            disabled=not linked or not report or drive_done,
-            help="Facultatif : dépose le PDF final dans le Drive du compte.",
-        ):
-            _handle_drive_upload(config)
-
-        if not linked:
+        if state["name"]:
             st.caption(
-                "ℹ️ Liaison Google non configurée (voir README, section "
-                "« Google Sheets »)."
+                f"📗 {state['name']} — {state['base_count']} contrôle(s) "
+                "déjà dans le fichier."
             )
-        elif pending:
-            st.caption(f"⏳ {pending} contrôle(s) en attente d'envoi.")
+        elif state["created"]:
+            st.info(
+                "Nouveau fichier de contrôle créé. Chaque rapport créé y est "
+                "ajouté ; téléchargez-le puis rechargez-le aux prochains "
+                "contrôles.",
+                icon="🆕",
+            )
         else:
-            st.caption("✅ Tous les contrôles sont dans le tableau.")
+            session_note = (
+                "\n\nSans fichier, le fichier téléchargé ne contiendra que "
+                "les contrôles de cette session."
+                if state["session_count"]
+                else ""
+            )
+            st.warning(
+                "**Aucun fichier Excel chargé.**\n\n"
+                "- **Vous avez déjà un fichier ?** Chargez-le ci-dessus, dans "
+                "« Mettre à jour votre fichier de contrôle ».\n"
+                "- **Première fois ?** Créez votre fichier avec le bouton "
+                "rouge **en haut à droite de la page**." + session_note,
+                icon="⚠️",
+            )
 
-        if drive_done:
-            st.markdown(f"[📎 Voir le PDF sur le Drive]({report['drive_url']})")
+        if state["session_count"]:
+            st.success(
+                f"{state['session_count']} contrôle(s) de cette session "
+                "ajouté(s) au fichier.",
+                icon="✅",
+            )
+
+        st.download_button(
+            "⬇️ Télécharger le fichier de contrôle",
+            data=state["data"] or b"",
+            file_name=_excel_download_name(controller, branch, state["rows"]),
+            mime=_XLSX_MIME,
+            type="primary" if state["session_count"] or state["created"] else "secondary",
+            disabled=state["data"] is None,
+            use_container_width=True,
+        )
+        if state["data"] is not None:
+            total, last = excel_service.summarize(state["rows"])
+            last_text = f", dernier le {_fr_date(last)}" if last else ""
+            st.caption(
+                f"{total} contrôle(s){last_text}. Enregistrez le fichier dans "
+                "vos Téléchargements et rechargez-le au prochain contrôle. "
+                "Pensez à le télécharger avant de fermer l'application."
+            )
 
 
 # --------------------------------------------------------------------------- #
 # Bloc : Consultation des rapports (audit)
 # --------------------------------------------------------------------------- #
-def _render_audit(config_status) -> None:
-    config = config_status.config
-    linked = sheets_service.is_configured(config)
+def _collect_audit_rows(extra_files: list) -> tuple[list[dict], list[str]]:
+    """
+    Contrôles consultables : fichiers ajoutés + fichier de contrôle courant.
 
+    Un même contrôle présent dans plusieurs fichiers n'est compté qu'une
+    fois (même « Réf. ») ; la version du fichier courant l'emporte.
+    """
+    by_ref: dict = {}
+    warnings: list[str] = []
+    sources = [(upload.name, upload.getvalue()) for upload in extra_files or []]
+    own = _excel_state()
+    if own["data"] is not None:
+        sources.append((own["name"] or "fichier de cette session", own["data"]))
+
+    for name, data in sources:
+        try:
+            rows = _read_excel(data)
+        except ExcelError as exc:
+            warnings.append(f"« {name} » ignoré : {exc}")
+            continue
+        for row in rows:
+            by_ref[row.get("report_id") or tuple(row.values())] = row
+
+    rows = sorted(
+        by_ref.values(),
+        key=lambda row: (row.get("date_controle", ""), row.get("horodatage", "")),
+        reverse=True,
+    )
+    return rows, warnings
+
+
+def _render_audit() -> None:
     st.markdown("---")
     with st.container(border=True):
         st.markdown(
@@ -1097,17 +827,22 @@ def _render_audit(config_status) -> None:
             unsafe_allow_html=True,
         )
         st.markdown(
-            '<p class="section-sub">Recherche dans le tableau central : '
-            "par agence et par période.</p>",
+            '<p class="section-sub">Recherche dans les fichiers de contrôle '
+            "Excel : par agence et par période. Votre fichier (bloc « Fichier "
+            "de contrôle Excel ») est inclus automatiquement.</p>",
             unsafe_allow_html=True,
         )
 
-        if not linked:
-            st.caption(
-                "ℹ️ La consultation nécessite la liaison Google "
-                "(voir README, section « Google Sheets »)."
-            )
-            return
+        extra_files = st.file_uploader(
+            "Autres fichiers de contrôle à consulter (facultatif)",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            key="audit_files",
+            help=(
+                "Ajoutez les fichiers d'autres contrôleurs pour une vue "
+                "d'ensemble. Ils sont seulement lus, jamais modifiés."
+            ),
+        )
 
         today = dt.date.today()
         c_scope, c_from, c_to = st.columns([2, 1, 1])
@@ -1140,38 +875,29 @@ def _render_audit(config_status) -> None:
             elif date_from > date_to:
                 st.error("La date de début est postérieure à la date de fin.")
             else:
-                with st.spinner("Lecture du tableau..."):
-                    try:
-                        rows = sheets_service.query_rows(
-                            config,
-                            branches=selected,
-                            date_from=date_from.isoformat(),
-                            date_to=date_to.isoformat(),
-                        )
-                    except SheetsError as exc:
-                        st.error(str(exc))
-                        rows = None
-                    except Exception:
-                        logger.exception("Échec inattendu de la consultation.")
-                        st.error(
-                            "Une erreur inattendue est survenue pendant la "
-                            "lecture du tableau. Consultez logs/app.log."
-                        )
-                        rows = None
-                if rows is not None:
-                    scope_label = (
-                        "Toutes les agences"
-                        if scope == "Toutes les agences"
-                        else ", ".join(selected)
-                    )
-                    st.session_state["audit"] = {
-                        "rows": rows,
-                        "subtitle": (
-                            f"{scope_label} — du {date_from.strftime('%d/%m/%Y')} "
-                            f"au {date_to.strftime('%d/%m/%Y')}"
-                        ),
-                        "stamp": dt.datetime.now().strftime("%Y%m%d_%H%M"),
-                    }
+                all_rows, warnings = _collect_audit_rows(extra_files)
+                for warning in warnings:
+                    st.warning(warning)
+                start, end = date_from.isoformat(), date_to.isoformat()
+                rows = [
+                    row for row in all_rows
+                    if start <= row.get("date_controle", "") <= end
+                    and (not selected or row.get("agence") in selected)
+                ]
+                scope_label = (
+                    "Toutes les agences"
+                    if scope == "Toutes les agences"
+                    else ", ".join(selected)
+                )
+                st.session_state["audit"] = {
+                    "rows": rows,
+                    "sources_empty": not all_rows,
+                    "subtitle": (
+                        f"{scope_label} — du {date_from.strftime('%d/%m/%Y')} "
+                        f"au {date_to.strftime('%d/%m/%Y')}"
+                    ),
+                    "stamp": dt.datetime.now().strftime("%Y%m%d_%H%M"),
+                }
 
         audit = st.session_state.get("audit")
         if not audit:
@@ -1179,6 +905,12 @@ def _render_audit(config_status) -> None:
 
         rows = audit["rows"]
         st.caption(audit["subtitle"])
+        if audit.get("sources_empty"):
+            st.info(
+                "Aucun contrôle à consulter : chargez votre fichier de "
+                "contrôle Excel, ou ajoutez des fichiers ci-dessus."
+            )
+            return
         if not rows:
             st.info("Aucun rapport ne correspond à ces critères.")
             return
@@ -1204,10 +936,10 @@ def _render_audit(config_status) -> None:
             )
         with d2:
             st.download_button(
-                "⬇️ Télécharger pour Excel (CSV)",
-                data=_build_audit_csv(rows),
-                file_name=f"rapports_controle_n1_{audit['stamp']}.csv",
-                mime="text/csv",
+                "⬇️ Télécharger en Excel",
+                data=_merge_excel(None, rows),
+                file_name=f"rapports_controle_n1_{audit['stamp']}.xlsx",
+                mime=_XLSX_MIME,
                 use_container_width=True,
             )
 
@@ -1223,32 +955,24 @@ def main() -> None:
     st.markdown(_BASE_CSS, unsafe_allow_html=True)
     _inject_status_css()
 
-    config_status = get_config_status()
-    use_google = _render_sidebar(config_status)
+    config = load_config()
+    _render_sidebar()
 
-    # En-tête : logo en haut à gauche, puis titre.
+    # En-tête : logo en haut à gauche, titre, et à droite le bouton de
+    # création du premier fichier Excel (à l'écart des blocs d'opérations).
     if LOGO_PATH.exists():
-        logo_col, title_col = st.columns([1, 9])
+        logo_col, title_col, first_col = st.columns([1, 6.2, 2.8])
         with logo_col:
             # Décale le logo vers le bas pour qu'il ne passe pas sous la barre Streamlit.
             st.markdown('<div style="height: 40px"></div>', unsafe_allow_html=True)
             st.image(str(LOGO_PATH), width=120)
-        with title_col:
-            st.title(APP_TITLE)
-            st.caption(APP_SUBTITLE)
     else:
+        title_col, first_col = st.columns([7.2, 2.8])
+    with title_col:
         st.title(APP_TITLE)
         st.caption(APP_SUBTITLE)
-
-    # Bannière config compacte (peu intrusive) — détail complet en sidebar.
-    email_on = _email_enabled(config_status) or config_comes_from_secrets()
-    if email_on and not config_status.ok:
-        st.markdown(
-            '<div class="config-banner">⚠️ Envoi e-mail indisponible : '
-            "configurez l'e-mail dans la barre latérale (panneau « Configurer "
-            "l'e-mail »). La génération du PDF reste possible.</div>",
-            unsafe_allow_html=True,
-        )
+    with first_col:
+        _render_first_time_button()
 
     # ----- Zone haute : Informations générales (3 colonnes) -----
     with st.container(border=True):
@@ -1257,7 +981,7 @@ def main() -> None:
         with c1:
             controller = st.text_input(
                 "Nom du contrôleur *",
-                value=(config_status.config or {}).get("default_controller_name", "") or "",
+                value=config.get("default_controller_name", "") or "",
                 placeholder="Ex. : Prénom Nom",
             )
         with c2:
@@ -1271,8 +995,8 @@ def main() -> None:
     # ----- Zone centrale : Contrôle niveau 1 -----
     _render_control_block()
 
-    # ----- Zone basse : Observations (gauche) | Documents + Actions (droite) -----
-    col_obs, col_right = st.columns(2)
+    # ----- Observations (gauche) | Documents scannés (droite) -----
+    col_obs, col_docs = st.columns(2)
     with col_obs:
         with st.container(border=True):
             st.markdown('<p class="section-title sec-obs">Observations générales</p>', unsafe_allow_html=True)
@@ -1283,7 +1007,7 @@ def main() -> None:
                 placeholder="Remarques générales sur le contrôle...",
                 label_visibility="collapsed",
             )
-    with col_right:
+    with col_docs:
         with st.container(border=True):
             st.markdown('<p class="section-title sec-doc">Documents scannés</p>', unsafe_allow_html=True)
             st.markdown(
@@ -1298,18 +1022,21 @@ def main() -> None:
                 label_visibility="collapsed",
             )
 
+
+    # ----- Bas : Actions du rapport PDF (gauche) | Fichier Excel (droite) -----
+    # Les actions sont exécutées en premier : un rapport créé à l'instant
+    # figure déjà dans le fichier Excel affiché à droite.
+    col_pdf, col_xlsx = st.columns(2)
+    with col_pdf:
         _render_actions(
             controller, branch, control_date, observations,
-            uploaded_files, config_status, email_on,
+            uploaded_files,
         )
-        # Blocs Google : affichés uniquement si l'utilisateur travaille avec
-        # son compte Google. Sinon, l'application reste en mode local.
-        if use_google:
-            _render_sync(config_status)
+    with col_xlsx:
+        _render_excel(controller, branch)
 
-    # ----- Bas de page : consultation des rapports archivés -----
-    if use_google:
-        _render_audit(config_status)
+    # ----- Bas de page : consultation des fichiers de contrôle -----
+    _render_audit()
 
 
 if __name__ == "__main__":

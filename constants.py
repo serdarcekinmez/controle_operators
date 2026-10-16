@@ -30,7 +30,6 @@ DB_PATH: Path = DATA_DIR / "controles.db"
 LOG_PATH: Path = LOGS_DIR / "app.log"
 
 CONFIG_PATH: Path = BASE_DIR / "config.json"
-CONFIG_EXAMPLE_PATH: Path = BASE_DIR / "config.example.json"
 
 LOGO_PATH: Path = BASE_DIR / "assets" / "logo_interchange.png"
 
@@ -116,28 +115,18 @@ IMAGE_EXTENSIONS = ("jpg", "jpeg", "png")
 MAX_IMAGE_DIMENSION = 2200
 
 # --------------------------------------------------------------------------- #
-# Email / SMTP
+# Fichier de contrôle Excel (.xlsx, conservé par chaque contrôleur)
 # --------------------------------------------------------------------------- #
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 465  # SSL
+# Onglet du classeur qui contient les contrôles (les autres onglets sont
+# laissés intacts).
+EXCEL_SHEET_NAME = "Controles"
 
-# Clés obligatoires dans config.json
-REQUIRED_CONFIG_KEYS = ("smtp_email", "smtp_app_password", "recipient_email")
+# Début du nom de fichier téléchargé quand aucune agence n'est connue
+# (sinon : « Agence - AAMMJJ - Prénom.xlsx »).
+EXCEL_DEFAULT_STEM = "Controles"
 
-# --------------------------------------------------------------------------- #
-# Google Sheets / Drive (passerelle Apps Script)
-# --------------------------------------------------------------------------- #
-# Ces clés sont FACULTATIVES : sans elles, l'application fonctionne exactement
-# comme avant (génération PDF + email), la synchronisation est simplement
-# désactivée dans l'interface.
-SHEETS_CONFIG_KEYS = ("sheets_webapp_url", "sheets_token")
-
-# Délai maximal d'un appel réseau vers la passerelle (secondes).
-SHEETS_TIMEOUT = 30
-SHEETS_UPLOAD_TIMEOUT = 120
-
-# Colonnes de la feuille, dans l'ordre. Doit rester identique au tableau
-# HEADERS du script Apps Script (apps_script/Code.gs).
+# Colonnes de l'onglet, dans l'ordre. Les en-têtes du fichier sont les
+# libellés de SHEET_COLUMN_LABELS ; la « Réf. » identifie chaque contrôle.
 SHEET_COLUMNS: list[str] = [
     "report_id",
     "horodatage",
@@ -152,11 +141,10 @@ SHEET_COLUMNS: list[str] = [
     "nb_problemes",
     "observations",
     "fichier_pdf",
-    "lien_drive",
     "email_envoye",
 ]
 
-# Correspondance : clé technique du point de contrôle -> colonne de la feuille.
+# Correspondance : clé technique du point de contrôle -> colonne du fichier.
 CONTROL_KEY_TO_SHEET_COLUMN: dict[str, str] = {
     "controle_journee_comptable": "journee_comptable",
     "controle_caisses": "caisses",
@@ -165,7 +153,7 @@ CONTROL_KEY_TO_SHEET_COLUMN: dict[str, str] = {
     "controle_cash": "cash",
 }
 
-# Libellés lisibles pour l'affichage du tableau de consultation.
+# Libellés lisibles : en-têtes du fichier Excel et du tableau de consultation.
 SHEET_COLUMN_LABELS: dict[str, str] = {
     "report_id": "Réf.",
     "horodatage": "Enregistré le",
@@ -180,22 +168,21 @@ SHEET_COLUMN_LABELS: dict[str, str] = {
     "nb_problemes": "Anomalies",
     "observations": "Observations",
     "fichier_pdf": "Fichier PDF",
-    "lien_drive": "Drive",
     "email_envoye": "E-mail",
 }
 
-# Valeur inscrite dans la feuille pour un point conforme.
+# Valeur inscrite dans le fichier pour un point conforme.
 SHEET_VALUE_OK = "RAS"
 SHEET_VALUE_EMPTY = "Non renseigné"
 SHEET_PROBLEM_PREFIX = "ANOMALIE"
-# Préfixe utilisé avant le passage à « Anomalie » : les anciennes lignes de la
-# feuille le portent encore, on le reconnaît toujours pour la mise en couleur.
+# Préfixe utilisé avant le passage à « Anomalie » : d'anciennes lignes
+# le portent encore, on le reconnaît toujours pour la mise en couleur.
 SHEET_PROBLEM_PREFIXES: tuple[str, ...] = (SHEET_PROBLEM_PREFIX, "PROBLÈME")
 
 
 def sheet_cell_value(status: str | None, comment: str | None = None) -> str:
     """
-    Valeur d'une colonne de contrôle dans la feuille.
+    Valeur d'une colonne de contrôle dans le fichier Excel.
 
     - statut "ok"      -> "RAS"
     - statut "problem" -> "ANOMALIE — {commentaire}"

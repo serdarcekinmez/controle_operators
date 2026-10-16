@@ -48,10 +48,15 @@ if not exist "app.py" (
     exit /b 1
 )
 
-REM --- Verifier que Streamlit est installe ---
-".venv\Scripts\python.exe" -c "import streamlit" >nul 2>&1
+REM --- Verifier les dependances (installe celles d'une nouvelle version) ---
+".venv\Scripts\python.exe" -c "import streamlit, openpyxl" >nul 2>&1
 if errorlevel 1 (
-    echo [ERREUR] Streamlit n'est pas installe dans l'environnement.
+    echo Installation des composants manquants, patientez...
+    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
+)
+".venv\Scripts\python.exe" -c "import streamlit, openpyxl" >nul 2>&1
+if errorlevel 1 (
+    echo [ERREUR] Les composants de l'application ne sont pas installes.
     echo Veuillez relancer SETUP.bat.
     echo.
     pause

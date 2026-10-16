@@ -2,21 +2,23 @@
 
 Application **locale** (poste de travail Windows) permettant à un contrôleur
 de remplir un formulaire de contrôle niveau 1, de générer **un seul PDF
-final** (rapport + documents scannés) et de l'envoyer par email à une boîte
-Gmail partagée qui sert d'archive centrale.
+final** (rapport + documents scannés), de l'ajouter à **son fichier de
+contrôle Excel**. L'envoi par e-mail (Outlook) sera ajouté dans une version
+future.
 
 > ⚠️ Cette application ne contient **aucune donnée client**. Elle enregistre
 > uniquement si les points de contrôle interne ont été vérifiés ou non.
 > Elle fonctionne **en local** : pas de serveur web, pas d'exposition à
-> internet. La liaison **Google Sheets / Drive** est **facultative** (voir
-> section 9) : sans elle, l'application produit le PDF et l'envoie par e-mail
-> exactement comme avant.
+> internet. Le suivi des contrôles se fait dans un **fichier Excel local**
+> que chaque contrôleur charge puis retélécharge (voir section 7) : aucun
+> compte Google n'est nécessaire.
 
 ---
 
 ## 1. Ce que fait l'application
 
-1. Vous ouvrez l'application en local (dans votre navigateur).
+1. Vous ouvrez l'application en local (dans votre navigateur) et chargez
+   votre fichier de contrôle Excel (section 7).
 2. Vous saisissez le nom du contrôleur.
 3. Vous choisissez l'agence dans une liste déroulante.
 4. Vous confirmez la date du contrôle (par défaut : aujourd'hui).
@@ -30,9 +32,9 @@ Gmail partagée qui sert d'archive centrale.
    - Les PDF déjà fournis sont conservés tels quels.
    - Tout est fusionné en **un seul PDF final** :
      page 1 = rapport, pages suivantes = documents joints.
-9. Vous téléchargez/ouvrez le PDF, puis cliquez sur **« Envoyer le rapport »**.
-10. Le PDF final est envoyé à la boîte Gmail partagée, une copie locale est
-    conservée et l'envoi est journalisé.
+   - Le contrôle est **ajouté automatiquement** à votre fichier Excel.
+9. Vous téléchargez/ouvrez le PDF ; une copie locale est conservée.
+10. Vous téléchargez votre **fichier de contrôle Excel** mis à jour.
 
 ---
 
@@ -62,7 +64,7 @@ Pour vérifier : ouvrez l'application après l'installation ; si une erreur
 Ce fichier :
 
 - crée un environnement isolé (`.venv`) ;
-- installe automatiquement les dépendances (Streamlit, ReportLab, Pillow, pypdf) ;
+- installe automatiquement les dépendances (Streamlit, ReportLab, Pillow, pypdf, openpyxl) ;
 - affiche des messages clairs et reste ouvert à la fin pour que vous puissiez
   lire d'éventuelles erreurs.
 
@@ -70,55 +72,34 @@ L'opération peut prendre 1 à 2 minutes la première fois.
 
 ---
 
-## 4. Configurer l'envoi des emails
+## 4. Envoi par e-mail (bientôt disponible)
 
-Aucun fichier à modifier : tout se fait dans l'application.
+Le bouton **« 📧 Envoyer le rapport »** est déjà visible dans le bloc
+« Actions du rapport », mais il est **désactivé** pour le moment.
 
-1. Lancez l'application (voir section 6).
-2. Dans la barre latérale, ouvrez le panneau **📧 Configurer l'e-mail**
-   (il est ouvert automatiquement tant que l'e-mail n'est pas configuré).
-3. Renseignez les informations fournies par l'administrateur :
-   - **Adresse Gmail d'envoi** : l'adresse Gmail partagée qui envoie les rapports ;
-   - **Mot de passe d'application** : 16 lettres (voir section 5) ;
-   - **Adresse de réception** : facultatif, la même adresse que l'envoi si vide.
-4. Cliquez sur **Vérifier et enregistrer**. L'application teste les
-   identifiants auprès de Gmail et ne les enregistre que s'ils fonctionnent.
+L'envoi sera branché plus tard sur **Outlook / SharePoint (Microsoft 365)**,
+avec les comptes des agences et des directions : aucun compte Google ni
+Gmail n'est utilisé par l'application. En attendant, téléchargez le PDF avec
+**⬇️ Télécharger le rapport** et transmettez-le par vos moyens habituels.
 
-Les réglages sont enregistrés sur ce poste dans `config.json` (jamais
-partagé, jamais versionné). Ils restent modifiables à tout moment via
-**📧 Modifier les réglages e-mail**.
+L'objet prévu pour l'e-mail suit le format :
+`[Contrôle N1] {agence} - {date} - {contrôleur}` ; le PDF final (et lui
+seul) sera joint.
 
-> ❌ N'utilisez **jamais** le mot de passe principal du compte Gmail.
-> ✅ Utilisez un mot de passe d'application dédié.
+### (Facultatif) Nom du contrôleur pré-rempli
 
-### Utiliser l'application sans e-mail (mode rapport seul)
+Pour ne pas retaper son nom à chaque contrôle, créez à côté de `app.py` un
+fichier `config.json` (modèle : `config.example.json`) :
 
-Pour seulement produire le rapport PDF, sans Gmail ni Google Sheets :
-cliquez sur **Continuer sans e-mail (rapport PDF seul)** sous le panneau
-de configuration. Le bouton d'envoi et les avertissements disparaissent ;
-le PDF se télécharge avec **⬇️ Télécharger le rapport** et une copie est
-enregistrée dans le dossier `reports` (classée par mois et par agence).
-L'envoi peut être activé plus tard avec **Activer l'envoi par e-mail**.
+```json
+{
+  "default_controller_name": "Prénom Nom"
+}
+```
 
 ---
 
-## 5. Créer un « mot de passe d'application » Gmail
-
-Principe général (l'interface Google peut évoluer) :
-
-1. Le compte Gmail doit avoir la **validation en deux étapes** activée.
-2. Allez dans la gestion du compte Google → **Sécurité**.
-3. Recherchez **« Mots de passe des applications »**.
-4. Générez un nouveau mot de passe d'application (16 caractères, par groupes
-   de 4, par ex. `abcd efgh ijkl mnop`).
-5. Saisissez-le dans le panneau **📧 Configurer l'e-mail** de l'application.
-
-Ce mot de passe ne sert qu'à cette application et peut être révoqué à tout
-moment depuis le compte Google.
-
----
-
-## 6. Lancer l'application
+## 5. Lancer l'application
 
 > **Étape 2 — Double-cliquez sur `RUN_APP.bat`**
 
@@ -144,7 +125,7 @@ simple double-clic sur cette icône lancera l'application.
 
 ---
 
-## 7. Générer un rapport
+## 6. Générer un rapport
 
 1. Renseignez le **nom du contrôleur** (obligatoire).
 2. Choisissez l'**agence** (obligatoire).
@@ -161,96 +142,75 @@ Vous pouvez générer un rapport **même sans aucun document téléversé**.
 
 ---
 
-## 8. Envoyer un rapport
+## 7. Le fichier de contrôle Excel
 
-1. Après génération, cliquez sur **« Envoyer le rapport »**.
-2. Un message vous indique le succès ou l'échec de l'envoi.
-3. Le PDF final (et lui seul) est joint à l'email. Les images d'origine ne
-   sont pas jointes séparément.
+Chaque contrôleur conserve **son propre fichier Excel** (`.xlsx`) sur son
+poste. L'application n'utilise **aucun compte en ligne** (ni Google, ni
+autre) : le fichier ne quitte jamais votre ordinateur.
 
-L'objet de l'email suit le format :
-`[Contrôle N1] {agence} - {date} - {contrôleur}`
+### À chaque contrôle
 
----
+1. Dans le bloc **« Fichier de contrôle Excel »**, champ **« Mettre à jour
+   votre fichier de contrôle »** : choisissez votre fichier (en général dans
+   le dossier **Téléchargements**).
+2. Remplissez le contrôle et cliquez sur **« Créer le rapport PDF »** :
+   le contrôle est **ajouté automatiquement** au fichier, qui est trié par
+   date de contrôle.
+3. Cliquez sur **« ⬇️ Télécharger le fichier de contrôle »** : le fichier mis
+   à jour est enregistré dans vos Téléchargements.
+4. Au contrôle suivant, chargez **ce dernier fichier** (le plus récent).
 
-## 9. (Facultatif) Tableau Google Sheets et Drive
+Le fichier téléchargé est nommé **« Agence - AAMMJJ - Prénom.xlsx »**, par
+exemple `Lyon - 261016 - Jean.xlsx` (agence du contrôle, date du jour,
+prénom du contrôleur) : le plus récent est toujours facile à retrouver.
+Vous pouvez supprimer les anciennes versions.
 
-Cette partie est **optionnelle**. Si vous avez seulement besoin du rapport
-PDF (et de l'e-mail), ignorez-la : l'application fonctionne en **mode local**
-et les blocs Google n'apparaissent pas.
+> **Première utilisation** : cliquez sur le bouton rouge **« 🆕 Première
+> fois ? Créez votre 1er fichier Excel en cliquant ici »**, en haut à droite
+> de la page (renseignez d'abord votre nom : votre prénom apparaît dans le
+> nom du fichier). Un fichier Excel vide est prêt ; vos rapports y sont
+> ajoutés. Téléchargez-le et gardez-le pour la suite. Le bouton disparaît dès
+> qu'un fichier est chargé ou créé.
 
-### Avec ou sans compte Google
+La page est organisée ainsi : en bas à gauche, **« Actions du rapport »**
+(tout ce qui concerne le PDF) ; en bas à droite, **« Fichier de contrôle
+Excel »** (chargement et téléchargement du fichier). Tant qu'aucun fichier
+n'est chargé, ce bloc affiche un rappel des deux possibilités.
 
-- **Sans liaison configurée** : mode local automatique (PDF + e-mail).
-- **Avec liaison configurée** : un interrupteur **« Utiliser Google Sheets /
-  Drive »** apparaît dans la barre latérale. Désactivez-le pour travailler
-  sans Google ; les contrôles restent enregistrés sur le poste et pourront
-  être envoyés au tableau plus tard en le réactivant.
-- Dans `config.json`, `"use_google": false` désactive l'interrupteur par
-  défaut au démarrage.
+> ⚠️ Si vous oubliez de charger votre fichier, le fichier téléchargé ne
+> contient que les contrôles du jour (un avertissement l'indique). Chargez
+> votre fichier habituel, même après avoir créé le rapport : le contrôle y
+> est ajouté, puis téléchargez à nouveau.
 
-Une fois activé, vous disposez de :
+Bon à savoir :
 
-- **« Mettre à jour le tableau »** : envoie vers la feuille tous les contrôles
-  pas encore synchronisés (un contrôle renvoyé met sa ligne à jour, sans
-  doublon) ;
-- **« Ajouter le rapport PDF au Drive »** : dépose le PDF final dans un dossier
-  du Drive ;
-- **« Consultation des rapports »** : recherche par agence et par période,
-  export HTML ou CSV (Excel).
+- Plusieurs rapports créés dans la même séance sont tous ajoutés.
+- Un contrôle déjà présent (même « Réf. ») est **mis à jour**, jamais
+  dupliqué. La colonne « E-mail » restera à « Non » tant que l'envoi
+  Outlook n'est pas disponible.
+- Vous pouvez ouvrir et annoter le fichier dans Excel : les colonnes et les
+  onglets que vous ajoutez sont conservés. Ne renommez pas l'onglet
+  **« Controles »** ni ses en-têtes.
+- Téléchargez le fichier **avant de fermer l'application** : sinon il faudra
+  le recharger et recréer le rapport. Les PDF restent de toute façon
+  enregistrés sur le poste (dossier `reports`).
 
-### Mise en place (une seule fois, avec le compte Google d'archivage)
+### Consultation des rapports
 
-1. Créez un classeur Google Sheets (ex. « Contrôles niveau 1 »).
-2. Menu **Extensions → Apps Script**. Remplacez le contenu par celui du
-   fichier `apps_script/Code.gs`, puis enregistrez.
-3. Dans l'éditeur, sélectionnez la fonction **`genererJeton`** et cliquez sur
-   **Exécuter** (autorisez l'accès demandé). Le jeton s'affiche dans le
-   journal d'exécution : copiez-le.
-4. **Déployer → Nouveau déploiement → Application web** :
-   - Exécuter en tant que : **Moi** ;
-   - Qui a accès : **Tout le monde**.
-   Copiez l'URL obtenue (elle se termine par `/exec`).
-5. Sur chaque poste, dans la barre latérale de l'application, panneau
-   **🔗 Se connecter** : collez l'URL (étape 4) dans « Adresse de la
-   passerelle » et le jeton (étape 3) dans « Code d'accès », puis cliquez
-   sur **Connecter**. La liaison est testée avant d'être enregistrée.
+En bas de page, le bloc **« Consultation des rapports »** recherche dans les
+fichiers de contrôle par agence et par période :
 
-L'onglet « Controles » et le dossier Drive « Rapports contrôle niveau 1 »
-sont créés automatiquement au premier envoi. Seules les personnes qui ont le
-jeton peuvent lire ou écrire via la passerelle : ne le partagez pas.
-
-> Si vous modifiez `Code.gs`, pensez à **Déployer → Gérer les déploiements →
-> Modifier → Nouvelle version**, sinon l'ancienne version reste active.
-
-### Application en ligne (Streamlit Community Cloud)
-
-En ligne, `config.json` n'existe pas (il n'est jamais envoyé sur GitHub).
-Les mêmes valeurs se saisissent dans **Settings → Secrets** de l'application,
-au format TOML :
-
-```toml
-smtp_email = "controle.agences@gmail.com"
-smtp_app_password = "abcd efgh ijkl mnop"
-recipient_email = "controle.agences@gmail.com"
-default_controller_name = ""
-
-use_google = true
-sheets_webapp_url = "https://script.google.com/macros/s/.../exec"
-sheets_token = "le jeton copié à l'étape 3"
-```
-
-Enregistrez : l'application redémarre et les lit automatiquement. Si un
-`config.json` est présent (poste local), c'est lui qui est utilisé.
-
-> ⚠️ En ligne, le disque est effacé à chaque redémarrage : téléchargez les PDF
-> et utilisez « Mettre à jour le tableau » juste après chaque contrôle.
-> Après un test, supprimez les Secrets et révoquez le mot de passe
-> d'application dans le compte Google.
+- votre fichier (celui du bloc « Fichier de contrôle Excel ») est inclus
+  automatiquement ;
+- pour une vue d'ensemble, ajoutez les fichiers d'autres contrôleurs dans
+  **« Autres fichiers de contrôle à consulter »** (ils sont seulement lus,
+  jamais modifiés ; un contrôle présent dans plusieurs fichiers n'est compté
+  qu'une fois) ;
+- le résultat s'exporte en **HTML** (impression) ou en **Excel**.
 
 ---
 
-## 10. Où sont enregistrés les fichiers
+## 8. Où sont enregistrés les fichiers
 
 ```
 reports/
@@ -275,43 +235,45 @@ de l'application (**« Historique local »**).
 
 ---
 
-## 11. Dépannage
+## 9. Dépannage
 
 | Problème | Solution |
 | --- | --- |
 | « Python n'est pas installé » | Réinstallez Python en cochant **« Add Python to PATH »**. |
-| Bandeau « Envoi e-mail indisponible » | Renseignez le panneau **📧 Configurer l'e-mail** dans la barre latérale. |
-| « Authentification Gmail refusée » | Vérifiez l'adresse et utilisez bien un **mot de passe d'application** (pas le mot de passe principal). |
-| « Connexion au serveur Gmail impossible » | Vérifiez votre connexion internet / pare-feu d'entreprise. |
+| Le bouton « Envoyer le rapport » est grisé | Normal : l'envoi Outlook sera disponible dans une version future. Téléchargez le PDF. |
 | Une image ne s'ajoute pas au PDF | Le fichier est peut-être corrompu ; un message le signale et le détail est dans `logs/app.log`. |
 | L'application ne démarre pas | Lancez d'abord `SETUP.bat`, puis consultez `logs/app.log`. |
 | Le navigateur ne s'ouvre pas tout seul | Ouvrez votre navigateur et allez sur **http://localhost:8501**. Laissez la fenêtre noire ouverte. |
 | « le port 8501 est déjà utilisé » | L'application est probablement déjà ouverte. Allez simplement sur **http://localhost:8501**, ou fermez l'ancienne fenêtre noire avant de relancer. |
 | « UNC paths are not supported » au lancement | Le dossier de l'application doit se trouver sur un disque **local Windows** (ex. `C:\Controle_Agences` ou le Bureau), et non sur un chemin réseau / `\\wsl...`. Copiez le dossier localement puis relancez `SETUP.bat`. |
 | « Streamlit n'est pas installé » | Relancez `SETUP.bat` (l'installation des dépendances a probablement échoué). |
-| Les blocs Google n'apparaissent pas | Normal en mode local. Utilisez le panneau **🔗 Se connecter** puis activez l'interrupteur dans la barre latérale. |
-| « Jeton invalide » | Le code d'accès doit être identique à la propriété `SHEETS_TOKEN` du script (attention aux espaces en trop). |
-| « Réponse inattendue » de la passerelle | Le déploiement doit être accessible à **Tout le monde** et l'URL se terminer par `/exec`. |
-| « Connexion à Google impossible » | Vérifiez internet / pare-feu ; les contrôles restent en attente et repartiront au prochain clic. |
+| « Ce fichier n'a pas pu être ouvert » | Le fichier doit être un classeur Excel `.xlsx` non protégé par mot de passe. Fermez-le dans Excel, puis rechargez-le. |
+| « Ce fichier ne contient pas d'onglet Controles » | Chargez le fichier de contrôle téléchargé depuis l'application (ou retirez-le et utilisez le bouton rouge en haut à droite de la page). L'onglet « Controles » ne doit pas être renommé. |
+| Le contrôle du jour n'est pas dans mon fichier | Le fichier a été téléchargé avant « Créer le rapport PDF », ou sans avoir chargé votre fichier. Chargez votre fichier, puis téléchargez-le à nouveau. |
+| Windows ajoute « (1) » au nom du fichier téléchargé | Normal si un fichier du même nom existe déjà. Chargez le plus récent (date AAMMJJ la plus grande) : le nom est recalculé à chaque téléchargement. |
 
 Pour toute erreur, le détail technique est consigné dans **`logs/app.log`**.
 
 ---
 
-## 12. Sécurité et confidentialité
+## 10. Sécurité et confidentialité
 
 - Aucun identifiant n'est écrit en dur dans le code.
-- `config.json` n'est jamais versionné (présent dans `.gitignore`).
+- Aucun compte en ligne (Google ou autre) n'est utilisé ; `config.json`
+  (facultatif) ne contient aucun mot de passe et n'est jamais versionné.
 - Seuls les formats PDF / JPG / JPEG / PNG sont acceptés ; les noms de
   fichiers sont nettoyés.
-- L'application reste **locale** : pas de serveur web public. Seule la
-  liaison Google (facultative) échange des données avec le compte
-  d'archivage, protégée par un jeton.
+- L'application reste **locale** : pas de serveur web public, aucun compte
+  en ligne pour le suivi. Le fichier de contrôle Excel est traité en
+  mémoire et ne quitte jamais le poste.
 
 ---
 
-## 13. Évolutions possibles
+## 11. Évolutions possibles
 
+- Envoi du rapport par **Outlook / SharePoint** (comptes Microsoft 365 des
+  agences et des directions), pour les responsables d'agence qui réaliseront
+  aussi leurs contrôles dans l'application.
 - Cette version (MVP) utilise des lanceurs `.bat`. Une version future pourra
   être empaquetée en exécutable `.exe` autonome avec **PyInstaller** afin de
   ne plus dépendre de Python installé sur le poste.
@@ -326,21 +288,19 @@ controle_operators/
 ├── constants.py            # Agences, items de contrôle, chemins, constantes
 ├── requirements.txt
 ├── README.md
-├── config.example.json     # Modèle de configuration (à copier en config.json)
+├── config.example.json     # Modèle de config.json (facultatif)
 ├── .gitignore
 ├── SETUP.bat               # Installation (une seule fois)
 ├── RUN_APP.bat             # Lancement de l'application
 ├── CREATE_SHORTCUT.bat     # Crée une icône sur le Bureau (facultatif)
 ├── .streamlit/
 │   └── config.toml         # Réglages locaux de Streamlit
-├── apps_script/
-│   └── Code.gs             # Passerelle Google Sheets / Drive (facultatif)
 ├── services/
 │   ├── __init__.py
-│   ├── config_service.py   # Lecture/validation de config.json
-│   ├── sheets_service.py   # Synchronisation Google Sheets / Drive
+│   ├── config_service.py   # Lecture de config.json (facultatif)
+│   ├── excel_service.py    # Fichier de contrôle Excel (lecture / mise à jour)
 │   ├── pdf_service.py      # Génération PDF, conversion image, fusion
-│   ├── email_service.py    # Envoi Gmail SMTP (SSL)
+│   ├── email_service.py    # Objet / corps de l'e-mail (envoi Outlook à venir)
 │   ├── file_service.py     # Dossiers, nettoyage de noms, sauvegardes
 │   ├── db_service.py       # Historique local SQLite
 │   └── logging_service.py  # Journalisation
