@@ -1,187 +1,32 @@
 """
 Service de configuration.
 
-Charge et valide la configuration. Ne contient JAMAIS de secret en dur :
-les identifiants sont lus, dans cet ordre, depuis :
-  1. config.json (poste local, non versionné) ;
-  2. les « Secrets » de Streamlit Community Cloud (application en ligne,
-     où config.json n'existe pas).
+Lit le fichier facultatif config.json (poste local, non versionné). Il ne
+contient plus aucun identifiant : seulement des préférences, comme le nom
+du contrôleur proposé par défaut. Sans lui, l'application fonctionne.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 
-import streamlit as st
-
-from constants import (
-    CONFIG_EXAMPLE_PATH,
-    CONFIG_PATH,
-    REQUIRED_CONFIG_KEYS,
-)
+from constants import CONFIG_PATH
 from services.logging_service import get_logger
 
 logger = get_logger()
 
 
-@dataclass
-class ConfigStatus:
-    """Résultat de la vérification de la configuration."""
-
-    ok: bool
-    config: dict | None
-    message: str
-
-
-def load_config() -> dict | None:
-    """Charge config.json. Retourne None si absent ou illisible."""
+def load_config() -> dict:
+    """Charge config.json. Retourne {} s'il est absent ou illisible."""
     if not CONFIG_PATH.exists():
-        return None
+        return {}
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
-            return json.load(f)
+            config = json.load(f)
     except json.JSONDecodeError as exc:
         logger.error("config.json invalide (JSON) : %s", exc)
-        return None
+        return {}
     except OSError as exc:
         logger.error("Impossible de lire config.json : %s", exc)
-        return None
-
-
-def load_secrets() -> dict | None:
-    """
-    Lit les Secrets Streamlit (Settings > Secrets sur Community Cloud).
-
-    Retourne None s'il n'y en a pas (cas normal sur un poste local).
-    """
-    try:
-        secrets = {key: st.secrets[key] for key in st.secrets.keys()}
-    except Exception:  # aucun fichier secrets.toml / Secrets vides
-        return None
-    return secrets or None
-
-
-def save_connection(webapp_url: str, token: str) -> None:
-    """
-    Enregistre l'URL et le jeton de la passerelle dans config.json.
-
-    Les autres réglages déjà présents (SMTP, contrôleur par défaut...) sont
-    conservés : on ne réécrit que les deux clés Google.
-    """
-    config = load_config() or {}
-    config["sheets_webapp_url"] = webapp_url.strip()
-    config["sheets_token"] = token.strip()
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-    logger.info("Liaison Google enregistrée dans config.json.")
-
-
-def save_email_settings(
-    smtp_email: str, smtp_app_password: str, recipient_email: str
-) -> None:
-    """
-    Enregistre les réglages d'envoi e-mail dans config.json (créé au besoin).
-
-    Les autres réglages déjà présents (liaison Google, contrôleur par
-    défaut...) sont conservés : on ne réécrit que les trois clés e-mail.
-    """
-    config = load_config() or {}
-    config["smtp_email"] = smtp_email.strip()
-    config["smtp_app_password"] = smtp_app_password
-    config["recipient_email"] = recipient_email.strip()
-    config["use_email"] = True
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-    logger.info("Réglages e-mail enregistrés dans config.json.")
-
-
-def set_email_mode(enabled: bool) -> None:
-    """
-    Active ou désactive l'envoi par e-mail sur ce poste (clé use_email).
-
-    Désactivé = « mode rapport seul » : l'application sert uniquement à
-    produire le PDF, sans compte Gmail. Les autres réglages sont conservés.
-    """
-    config = load_config() or {}
-    config["use_email"] = bool(enabled)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-    logger.info("Envoi e-mail %s sur ce poste.", "activé" if enabled else "désactivé")
-
-
-def clear_connection() -> None:
-    """Supprime la liaison Google de config.json (le reste est conservé)."""
-    config = load_config()
-    if not config:
-        return
-    config.pop("sheets_webapp_url", None)
-    config.pop("sheets_token", None)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-    logger.info("Liaison Google supprimée de config.json.")
-
-
-def config_comes_from_secrets() -> bool:
-    """Vrai si la configuration active provient des Secrets Streamlit."""
-    return not CONFIG_PATH.exists() and load_secrets() is not None
-
-
-def _looks_like_placeholder(value: str) -> bool:
-    """Détecte les valeurs d'exemple non remplacées."""
-    lowered = value.strip().lower()
-    if not lowered:
-        return True
-    placeholders = ("xxxx", "votre", "example@", "placeholder", "à_remplir")
-    return any(token in lowered for token in placeholders)
-
-
-def get_config_status() -> ConfigStatus:
-    """
-    Vérifie la présence et la complétude de la configuration.
-
-    Retourne un ConfigStatus utilisable directement par l'UI.
-    """
-    if CONFIG_PATH.exists():
-        config = load_config()
-        if config is None:
-            return ConfigStatus(
-                ok=False,
-                config=None,
-                message=(
-                    "Le fichier config.json est illisible ou mal formé. "
-                    "Vérifiez qu'il s'agit bien d'un JSON valide "
-                    f"(voir le modèle « {CONFIG_EXAMPLE_PATH.name} »)."
-                ),
-            )
-    else:
-        config = load_secrets()
-        if config is None:
-            return ConfigStatus(
-                ok=False,
-                config=None,
-                message=(
-                    "Aucune configuration trouvée. Renseignez l'adresse "
-                    "Gmail et le mot de passe d'application dans le panneau "
-                    "« Configurer l'e-mail » ci-dessous."
-                ),
-            )
-
-    # Vérification des clés obligatoires et de leur contenu.
-    missing: list[str] = []
-    for key in REQUIRED_CONFIG_KEYS:
-        value = config.get(key, "")
-        if not isinstance(value, str) or _looks_like_placeholder(value):
-            missing.append(key)
-
-    if missing:
-        return ConfigStatus(
-            ok=False,
-            config=config,
-            message=(
-                "La configuration e-mail est incomplète. Complétez-la dans "
-                "le panneau « Configurer l'e-mail » ci-dessous."
-            ),
-        )
-
-    return ConfigStatus(ok=True, config=config, message="Configuration valide.")
+        return {}
+    return config if isinstance(config, dict) else {}

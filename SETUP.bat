@@ -104,10 +104,7 @@ echo ============================================================
 echo   Installation terminee avec succes !
 echo.
 echo   ETAPE SUIVANTE :
-echo     1) Copiez config.example.json en config.json
-echo     2) Ouvrez config.json et renseignez l'adresse Gmail
-echo        et le mot de passe d'application
-echo     3) Double-cliquez ensuite sur RUN_APP.bat
+echo     Double-cliquez sur RUN_APP.bat pour lancer l'application.
 echo ============================================================
 echo.
 pause

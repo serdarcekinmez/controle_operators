@@ -1,31 +1,15 @@
 """
-Service d'envoi d'email via Gmail SMTP (SSL).
+Contenu de l'e-mail du rapport (objet et corps), sans envoi.
 
-Le PDF final fusionné est la SEULE pièce jointe (les images d'origine ne
-sont pas jointes séparément). Les identifiants proviennent de config.json.
+L'envoi par e-mail n'est pas encore branché : il le sera plus tard via les
+comptes Outlook / SharePoint (Microsoft 365) des agences et des directions.
+Ces fonctions, indépendantes du service de messagerie, serviront alors à
+composer le message ; le PDF final fusionné en sera la seule pièce jointe.
 """
 
 from __future__ import annotations
 
-import smtplib
-import ssl
-from email.message import EmailMessage
-from pathlib import Path
-
-from constants import (
-    CONTROL_ITEMS,
-    SMTP_HOST,
-    SMTP_PORT,
-    STATUS_PROBLEM,
-    status_label,
-)
-from services.logging_service import get_logger
-
-logger = get_logger()
-
-
-class EmailError(Exception):
-    """Erreur d'envoi d'email avec message déjà adapté à l'utilisateur."""
+from constants import CONTROL_ITEMS, STATUS_PROBLEM, status_label
 
 
 def build_subject(branch: str, control_date: str, controller: str) -> str:
@@ -76,103 +60,3 @@ def build_body(
         "Application de contrôle agences",
     ]
     return "\n".join(lines)
-
-
-def test_login(smtp_email: str, smtp_app_password: str) -> None:
-    """
-    Vérifie l'adresse et le mot de passe d'application auprès de Gmail,
-    sans envoyer de message. Lève EmailError (message français) en cas
-    d'échec.
-    """
-    context = ssl.create_default_context()
-    try:
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=20) as server:
-            server.login(smtp_email, smtp_app_password)
-    except smtplib.SMTPAuthenticationError as exc:
-        logger.error("Test de connexion Gmail refusé : %s", exc)
-        raise EmailError(
-            "Gmail refuse ces identifiants. Vérifiez l'adresse et le "
-            "« mot de passe d'application » (16 lettres) — le mot de passe "
-            "habituel du compte ne fonctionne pas ici."
-        ) from exc
-    except (smtplib.SMTPException, ssl.SSLError) as exc:
-        logger.error("Erreur SMTP pendant le test : %s", exc)
-        raise EmailError(
-            "Gmail a répondu par une erreur inattendue. Réessayez plus tard."
-        ) from exc
-    except (TimeoutError, OSError) as exc:
-        logger.error("Connexion SMTP impossible pendant le test : %s", exc)
-        raise EmailError(
-            "Connexion au serveur Gmail impossible. Vérifiez la connexion "
-            "internet de ce poste."
-        ) from exc
-
-
-def send_report(
-    config: dict,
-    subject: str,
-    body: str,
-    attachment_path: Path,
-) -> None:
-    """
-    Envoie le rapport par email. Lève EmailError (message français) en cas
-    d'échec ; les détails techniques sont journalisés.
-    """
-    attachment_path = Path(attachment_path)
-    if not attachment_path.exists():
-        raise EmailError("Le PDF à envoyer est introuvable sur le disque.")
-
-    sender = config["smtp_email"]
-    password = config["smtp_app_password"]
-    recipient = config["recipient_email"]
-
-    message = EmailMessage()
-    message["From"] = sender
-    message["To"] = recipient
-    message["Subject"] = subject
-    message.set_content(body)
-
-    try:
-        data = attachment_path.read_bytes()
-    except OSError as exc:
-        logger.error("Lecture du PDF impossible : %s", exc)
-        raise EmailError("Impossible de lire le PDF à joindre.") from exc
-
-    message.add_attachment(
-        data,
-        maintype="application",
-        subtype="pdf",
-        filename=attachment_path.name,
-    )
-
-    context = ssl.create_default_context()
-    try:
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=30) as server:
-            server.login(sender, password)
-            server.send_message(message)
-    except smtplib.SMTPAuthenticationError as exc:
-        logger.error("Authentification SMTP refusée : %s", exc)
-        raise EmailError(
-            "Authentification Gmail refusée. Vérifiez l'adresse et le "
-            "« mot de passe d'application » dans le panneau « Configurer "
-            "l'e-mail » (barre latérale)."
-        ) from exc
-    except (smtplib.SMTPException, ssl.SSLError) as exc:
-        logger.error("Erreur SMTP : %s", exc)
-        raise EmailError(
-            "Erreur lors de l'envoi via Gmail (problème SMTP). "
-            "Réessayez plus tard."
-        ) from exc
-    except (TimeoutError, OSError) as exc:
-        logger.error("Connexion SMTP impossible : %s", exc)
-        raise EmailError(
-            "Connexion au serveur Gmail impossible. Vérifiez votre "
-            "connexion internet."
-        ) from exc
-
-    logger.info(
-        "Email envoyé à %s (sujet : %s, pièce jointe : %s)",
-        recipient,
-        subject,
-        attachment_path.name,
-    )
