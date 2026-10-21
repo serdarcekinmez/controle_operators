@@ -10,8 +10,10 @@ L'envoi par e-mail sera branché plus tard sur Outlook / SharePoint
 (Microsoft 365) : le bouton est déjà présent, mais désactivé.
 
 Suivi des contrôles : chaque contrôleur conserve SON fichier Excel sur son
-poste. Il le téléverse, chaque rapport créé y est ajouté automatiquement,
-puis il le retélécharge mis à jour. Aucun compte en ligne n'est nécessaire.
+poste. Il le téléverse, chaque contrôle enregistré (« Enregistrer dans
+Excel », ou création du PDF) y est ajouté, puis il le retélécharge mis à
+jour. Un contrôle peut aussi en être supprimé. Aucun compte en ligne n'est
+nécessaire.
 
 Mise en page : disposition « bureau » compacte, en blocs/cartes, avec un
 choix de statut OK / Problème par point de contrôle.
@@ -177,9 +179,17 @@ def _bootstrap() -> bool:
     return True
 
 
-def _init_state() -> None:
+def _init_state(config: dict) -> None:
     if "statuses" not in st.session_state:
         st.session_state.statuses = {key: None for key, _ in CONTROL_ITEMS}
+    # Valeurs initiales des champs (fixées une fois : une valeur par défaut
+    # recalculée à chaque passage réinitialiserait le champ).
+    now = dt.datetime.now().time().replace(second=0, microsecond=0)
+    st.session_state.setdefault("controller", config.get("default_controller_name", "") or "")
+    st.session_state.setdefault("control_date", dt.date.today())
+    st.session_state.setdefault("control_time", now)
+    st.session_state.setdefault("del_date", dt.date.today())
+    st.session_state.setdefault("del_time", now)
 
 
 def _set_status(key: str, value: str) -> None:
@@ -191,6 +201,18 @@ def _set_status(key: str, value: str) -> None:
 # --------------------------------------------------------------------------- #
 # Collecte des données du formulaire
 # --------------------------------------------------------------------------- #
+def _form() -> dict:
+    """Champs du formulaire (Informations générales + observations)."""
+    ss = st.session_state
+    return {
+        "controller": (ss.get("controller") or "").strip(),
+        "branch": ss.get("branch"),
+        "control_date": ss.get("control_date") or dt.date.today(),
+        "control_time": ss.get("control_time") or dt.time(0, 0),
+        "observations": ss.get("observations") or "",
+    }
+
+
 def _collect_statuses() -> dict[str, str]:
     """Statuts normalisés en chaîne ('ok' | 'problem' | '')."""
     return {key: (st.session_state.statuses.get(key) or "") for key, _ in CONTROL_ITEMS}
@@ -203,6 +225,61 @@ def _collect_problem_comments() -> dict[str, str]:
         if st.session_state.statuses.get(key) == STATUS_PROBLEM:
             comments[key] = (st.session_state.get(f"comment_{key}", "") or "").strip()
     return comments
+
+
+def _form_report(form: dict) -> dict:
+    """Contrôle saisi, au format attendu par excel_service.build_row."""
+    return {
+        "report_id": db_service.new_report_id(),
+        "control_date": form["control_date"].isoformat(),
+        "control_time": form["control_time"].strftime("%H:%M"),
+        "branch": form["branch"],
+        "controller": form["controller"],
+        "statuses": _collect_statuses(),
+        "problem_comments": _collect_problem_comments(),
+        "observations": form["observations"],
+        "filename": "",
+        "email_sent": False,
+    }
+
+
+def _form_errors(form: dict) -> list[str]:
+    """Messages d'erreur du formulaire (liste vide si tout est correct)."""
+    missing = []
+    if not form["controller"]:
+        missing.append("le nom du contrôleur")
+    if not form["branch"]:
+        missing.append("l'agence")
+    if missing:
+        return ["Champs obligatoires manquants : " + ", ".join(missing) + "."]
+
+    statuses, comments = _collect_statuses(), _collect_problem_comments()
+    uncommented = [
+        label
+        for key, label in CONTROL_ITEMS
+        if statuses.get(key) == STATUS_PROBLEM and not comments.get(key)
+    ]
+    if uncommented:
+        return [
+            "Un commentaire est obligatoire pour chaque anomalie signalée : "
+            + ", ".join(uncommented) + "."
+        ]
+
+    # Date + heure + contrôleur identifient un contrôle : un contrôle d'une
+    # autre agence au même moment serait écrasé.
+    key = (
+        form["control_date"].isoformat(),
+        form["control_time"].strftime("%H:%M"),
+        excel_service.normalize_name(form["controller"]),
+    )
+    for row in _excel_state()["rows"]:
+        if excel_service.row_key(row) == key and row.get("agence") != form["branch"]:
+            return [
+                f"Le fichier Excel contient déjà un contrôle de {form['controller']} "
+                f"le {_fr_date(key[0])} à {key[1]} (agence {row.get('agence')}). "
+                "Corrigez l'heure du contrôle."
+            ]
+    return []
 
 
 # --------------------------------------------------------------------------- #
@@ -240,39 +317,19 @@ def _handle_convert(uploaded_files: list) -> None:
 # --------------------------------------------------------------------------- #
 # Action : créer le rapport PDF
 # --------------------------------------------------------------------------- #
-def _handle_generate(
-    controller: str,
-    branch: str | None,
-    control_date: dt.date,
-    observations: str,
-    uploaded_files: list,
-) -> None:
+def _handle_generate(uploaded_files: list) -> None:
+    form = _form()
+    errors = _form_errors(form)
+    for error in errors:
+        st.error(error)
+    if errors:
+        return
+
+    controller, branch = form["controller"], form["branch"]
+    control_date, observations = form["control_date"], form["observations"]
+    control_time_str = form["control_time"].strftime("%H:%M")
     statuses = _collect_statuses()
     problem_comments = _collect_problem_comments()
-
-    # --- Validation des champs obligatoires ---
-    errors: list[str] = []
-    if not controller.strip():
-        errors.append("le nom du contrôleur")
-    if not branch:
-        errors.append("l'agence")
-    if errors:
-        st.error("Champs obligatoires manquants : " + ", ".join(errors) + ".")
-        return
-
-    # --- Validation : toute "Anomalie" doit être commentée ---
-    missing_comments = [
-        label
-        for key, label in CONTROL_ITEMS
-        if statuses.get(key) == STATUS_PROBLEM and not problem_comments.get(key)
-    ]
-    if missing_comments:
-        st.error(
-            "Un commentaire est obligatoire pour chaque anomalie signalée : "
-            + ", ".join(missing_comments)
-            + "."
-        )
-        return
 
     # --- Préparation des pièces jointes ---
     attachments: list[Attachment] = []
@@ -288,8 +345,8 @@ def _handle_generate(
 
     meta = ReportMetadata(
         branch=branch,
-        control_date=control_date_str,
-        controller=controller.strip(),
+        control_date=f"{control_date_str} à {control_time_str}",
+        controller=controller,
         generated_at=generated_at,
         statuses=statuses,
         problem_comments=problem_comments,
@@ -339,7 +396,7 @@ def _handle_generate(
 
         record = db_service.ControlRecord(
             branch_name=branch,
-            controller_name=controller.strip(),
+            controller_name=controller,
             control_date=control_date_str,
             statuses=statuses,
             observations=observations,
@@ -360,10 +417,10 @@ def _handle_generate(
         "filename": pdf_path.name,
         "control_id": control_id,
         "report_id": report_id,
-        "created_at": dt.datetime.now().isoformat(sep=" ", timespec="minutes"),
         "branch": branch,
         "control_date": control_date_str,
-        "controller": controller.strip(),
+        "control_time": control_time_str,
+        "controller": controller,
         "statuses": statuses,
         "problem_comments": problem_comments,
         "observations": observations,
@@ -372,8 +429,9 @@ def _handle_generate(
     st.session_state["report"] = report
     _add_to_excel(report)
     st.success(
-        f"PDF généré avec succès : {pdf_path.name}. Le contrôle est ajouté à "
-        "votre fichier de contrôle Excel (bloc « Fichier de contrôle Excel »)."
+        f"PDF généré avec succès : {pdf_path.name}. Le contrôle est enregistré "
+        "dans votre fichier de contrôle Excel (bloc « Fichier de contrôle "
+        "Excel »)."
     )
 
 
@@ -383,10 +441,73 @@ def _handle_generate(
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-def _add_to_excel(report: dict) -> None:
-    """Ajoute (ou met à jour) le contrôle dans les lignes Excel de la session."""
+def _add_to_excel(report: dict) -> dict[str, str]:
+    """
+    Ajoute (ou met à jour) le contrôle dans les lignes Excel de la session.
+
+    Les lignes sont indexées par identité (date, heure, contrôleur) : un
+    contrôle enregistré une seconde fois (ex. « Enregistrer dans Excel »
+    après la création du PDF) garde sa « Réf. » et son nom de PDF.
+    """
     rows = st.session_state.setdefault("excel_rows", {})
-    rows[report["report_id"]] = excel_service.build_row(report)
+    row = excel_service.build_row(report)
+    key = excel_service.row_key(row)
+    previous = rows.get(key)
+    if previous:
+        row["report_id"] = previous["report_id"]
+        row["fichier_pdf"] = row["fichier_pdf"] or previous["fichier_pdf"]
+    rows[key] = row
+    st.session_state.setdefault("excel_deleted", set()).discard(key)
+    return row
+
+
+def _save_to_excel() -> None:
+    """Bouton « Enregistrer dans Excel » : ajoute le contrôle saisi."""
+    form = _form()
+    errors = _form_errors(form)
+    if errors:
+        st.session_state["excel_msg"] = ("error", " ".join(errors))
+        return
+    row = _add_to_excel(_form_report(form))
+    st.session_state["excel_msg"] = (
+        "success",
+        f"Contrôle enregistré : {row['agence']} — {_fr_date(row['date_controle'])} "
+        f"à {row['heure_controle']} — {row['controleur']}. Téléchargez le "
+        "fichier pour conserver la mise à jour.",
+    )
+
+
+def _delete_from_excel() -> None:
+    """Bouton « Supprimer » : retire le contrôle (date, heure, contrôleur)."""
+    ss = st.session_state
+    controller = (ss.get("del_controller") or "").strip()
+    if not controller or ss.get("del_date") is None or ss.get("del_time") is None:
+        ss["excel_msg"] = (
+            "error", "Renseignez la date, l'heure et le nom du contrôleur à supprimer."
+        )
+        return
+    key = (
+        ss["del_date"].isoformat(),
+        ss["del_time"].strftime("%H:%M"),
+        excel_service.normalize_name(controller),
+    )
+    label = f"{_fr_date(key[0])} à {key[1]} — {controller}"
+    matches = [row for row in _excel_state()["rows"] if excel_service.row_key(row) == key]
+    if not matches:
+        ss["excel_msg"] = (
+            "error",
+            f"Aucun contrôle trouvé dans le fichier pour : {label}. Vérifiez "
+            "la date, l'heure (colonne « Heure ») et le nom du contrôleur.",
+        )
+        return
+    ss.setdefault("excel_rows", {}).pop(key, None)
+    ss.setdefault("excel_deleted", set()).add(key)
+    agencies = ", ".join(sorted({row.get("agence", "") for row in matches}))
+    ss["excel_msg"] = (
+        "success",
+        f"Contrôle supprimé : {agencies} — {label}. Téléchargez le fichier "
+        "pour conserver la suppression.",
+    )
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
@@ -395,8 +516,10 @@ def _read_excel(data: bytes) -> list[dict[str, str]]:
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
-def _merge_excel(base: bytes | None, rows: list[dict[str, str]]) -> bytes:
-    return excel_service.update_workbook(base, rows)
+def _merge_excel(
+    base: bytes | None, rows: list[dict[str, str]], deleted: tuple = ()
+) -> bytes:
+    return excel_service.update_workbook(base, rows, deleted)
 
 
 def _fr_date(iso: str) -> str:
@@ -410,26 +533,20 @@ def _fr_date(iso: str) -> str:
 _FORBIDDEN_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
-def _excel_download_name(
-    controller: str, branch: str | None, rows: list[dict[str, str]]
-) -> str:
+def _excel_download_name(controller: str) -> str:
     """
-    Nom du fichier téléchargé : « Agence - AAMMJJ - Prénom.xlsx ».
+    Nom du fichier téléchargé : « AAMMJJ - Prénom.xlsx ».
 
-    - agence : celle du formulaire, sinon celle du contrôle le plus récent ;
     - date : jour de la mise à jour du fichier (ex. 261016) ;
     - prénom : premier mot du nom du contrôleur (« Jean Dupont » -> « Jean »).
 
-    Exemple : « Lyon - 261016 - Jean.xlsx ». Les parties inconnues sont omises.
+    Exemple : « 261016 - Jean.xlsx » (« 261016 - Controles.xlsx » sans nom).
+    Le fichier contient toutes les agences : l'agence n'est plus dans le nom.
     """
-    if not branch and rows:
-        branch = max(
-            rows, key=lambda row: (row.get("date_controle", ""), row.get("horodatage", ""))
-        ).get("agence")
     first_name = (controller or "").split()[0] if (controller or "").strip() else ""
     if first_name.islower():
         first_name = first_name.title()  # « jean-marie » -> « Jean-Marie »
-    parts =[branch or EXCEL_DEFAULT_STEM, dt.date.today().strftime("%y%m%d"), first_name]
+    parts = [dt.date.today().strftime("%y%m%d"), first_name or EXCEL_DEFAULT_STEM]
     parts = [_FORBIDDEN_FILENAME_CHARS.sub("", part).strip(" .") for part in parts]
     return " - ".join(part for part in parts if part) + ".xlsx"
 
@@ -445,6 +562,7 @@ def _excel_state() -> dict:
     """
     upload = st.session_state.get("xlsx_upload")
     session_rows = list(st.session_state.get("excel_rows", {}).values())
+    deleted = tuple(sorted(st.session_state.get("excel_deleted", set())))
     state: dict = {
         "name": upload.name if upload is not None else None,
         "created": upload is None and st.session_state.get("xlsx_new", False),
@@ -460,7 +578,7 @@ def _excel_state() -> dict:
     try:
         if base is not None:
             state["base_count"] = len(_read_excel(base))
-        data = _merge_excel(base, session_rows)
+        data = _merge_excel(base, session_rows, deleted)
         state["rows"] = _read_excel(data)
         state["data"] = data
     except ExcelError as exc:
@@ -480,6 +598,7 @@ def _excel_state() -> dict:
 # Colonnes affichées à l'écran (les autres restent dans les exports).
 _AUDIT_DISPLAY_COLUMNS = [
     "date_controle",
+    "heure_controle",
     "agence",
     "controleur",
     "journee_comptable",
@@ -617,13 +736,7 @@ def _render_control_block() -> None:
 # --------------------------------------------------------------------------- #
 # Bloc : Actions du rapport (boutons d'action visibles)
 # --------------------------------------------------------------------------- #
-def _render_actions(
-    controller: str,
-    branch: str | None,
-    control_date: dt.date,
-    observations: str,
-    uploaded_files: list,
-) -> None:
+def _render_actions(uploaded_files: list) -> None:
     with st.container(border=True):
         st.markdown('<p class="section-title sec-act">Actions du rapport</p>', unsafe_allow_html=True)
 
@@ -633,13 +746,7 @@ def _render_actions(
         if st.button(
             "📄 Créer le rapport PDF", type="primary", use_container_width=True
         ):
-            _handle_generate(
-                controller=controller,
-                branch=branch,
-                control_date=control_date,
-                observations=observations,
-                uploaded_files=uploaded_files,
-            )
+            _handle_generate(uploaded_files)
 
         # Emplacement réservé : l'envoi sera branché sur Outlook / SharePoint
         # (comptes Microsoft 365 des agences et des directions).
@@ -703,16 +810,17 @@ def _render_first_time_button() -> None:
 # --------------------------------------------------------------------------- #
 # Bloc : Fichier de contrôle Excel
 # --------------------------------------------------------------------------- #
-def _render_excel(controller: str, branch: str | None) -> None:
+def _render_excel(controller: str) -> None:
     with st.container(border=True):
         st.markdown(
             '<p class="section-title sec-xlsx">Fichier de contrôle Excel</p>',
             unsafe_allow_html=True,
         )
         st.markdown(
-            '<p class="section-sub">Chargez votre fichier : chaque rapport créé '
-            "y est ajouté automatiquement (trié par date). Téléchargez-le "
-            "ensuite pour le conserver sur votre poste.</p>",
+            '<p class="section-sub">Chargez votre fichier, puis cliquez sur '
+            "« Enregistrer dans Excel » à chaque contrôle : il est ajouté au "
+            "fichier, trié par date puis par heure. Téléchargez-le ensuite pour "
+            "le conserver sur votre poste.</p>",
             unsafe_allow_html=True,
         )
         st.file_uploader(
@@ -726,6 +834,22 @@ def _render_excel(controller: str, branch: str | None) -> None:
             ),
         )
 
+        st.button(
+            "💾 Enregistrer dans Excel",
+            type="primary",
+            use_container_width=True,
+            on_click=_save_to_excel,
+            help=(
+                "Ajoute le contrôle saisi (date, heure, agence, points de "
+                "contrôle, observations) au fichier de contrôle. Un contrôle "
+                "déjà enregistré (même date, heure et contrôleur) est mis à jour."
+            ),
+        )
+        message = st.session_state.pop("excel_msg", None)
+        if message:
+            kind, text = message
+            (st.success if kind == "success" else st.error)(text)
+
         state = _excel_state()
         if state["error"]:
             st.error(state["error"])
@@ -738,9 +862,9 @@ def _render_excel(controller: str, branch: str | None) -> None:
             )
         elif state["created"]:
             st.info(
-                "Nouveau fichier de contrôle créé. Chaque rapport créé y est "
-                "ajouté ; téléchargez-le puis rechargez-le aux prochains "
-                "contrôles.",
+                "Nouveau fichier de contrôle créé. Enregistrez-y vos contrôles "
+                "(« Enregistrer dans Excel »), téléchargez-le puis rechargez-le "
+                "aux prochains contrôles.",
                 icon="🆕",
             )
         else:
@@ -762,14 +886,14 @@ def _render_excel(controller: str, branch: str | None) -> None:
         if state["session_count"]:
             st.success(
                 f"{state['session_count']} contrôle(s) de cette session "
-                "ajouté(s) au fichier.",
+                "enregistré(s) dans le fichier.",
                 icon="✅",
             )
 
         st.download_button(
             "⬇️ Télécharger le fichier de contrôle",
             data=state["data"] or b"",
-            file_name=_excel_download_name(controller, branch, state["rows"]),
+            file_name=_excel_download_name(controller),
             mime=_XLSX_MIME,
             type="primary" if state["session_count"] or state["created"] else "secondary",
             disabled=state["data"] is None,
@@ -777,11 +901,38 @@ def _render_excel(controller: str, branch: str | None) -> None:
         )
         if state["data"] is not None:
             total, last = excel_service.summarize(state["rows"])
-            last_text = f", dernier le {_fr_date(last)}" if last else ""
+            if total:
+                st.caption(
+                    f"{total} contrôle(s), dernier le {_fr_date(last)} — onglet "
+                    "« Controles » (tous les contrôles) et un onglet par agence. "
+                    "Enregistrez le fichier dans vos Téléchargements et "
+                    "rechargez-le au prochain contrôle. Pensez à le télécharger "
+                    "avant de fermer l'application."
+                )
+            else:
+                st.warning(
+                    "Le fichier ne contient encore aucun contrôle : remplissez "
+                    "le formulaire puis cliquez sur « 💾 Enregistrer dans "
+                    "Excel » avant de le télécharger.",
+                    icon="⚠️",
+                )
+
+        with st.expander("🗑️ Supprimer un contrôle du fichier"):
             st.caption(
-                f"{total} contrôle(s){last_text}. Enregistrez le fichier dans "
-                "vos Téléchargements et rechargez-le au prochain contrôle. "
-                "Pensez à le télécharger avant de fermer l'application."
+                "Indiquez la date, l'heure (colonne « Heure » du fichier) et le "
+                "nom du contrôleur du contrôle à retirer."
+            )
+            d_date, d_time = st.columns(2)
+            with d_date:
+                st.date_input("Date", key="del_date", format="DD/MM/YYYY")
+            with d_time:
+                st.time_input("Heure", key="del_time", step=60)
+            st.text_input("Nom du contrôleur", key="del_controller")
+            st.button(
+                "🗑️ Supprimer ce contrôle",
+                use_container_width=True,
+                on_click=_delete_from_excel,
+                disabled=state["data"] is None,
             )
 
 
@@ -811,11 +962,7 @@ def _collect_audit_rows(extra_files: list) -> tuple[list[dict], list[str]]:
         for row in rows:
             by_ref[row.get("report_id") or tuple(row.values())] = row
 
-    rows = sorted(
-        by_ref.values(),
-        key=lambda row: (row.get("date_controle", ""), row.get("horodatage", "")),
-        reverse=True,
-    )
+    rows = sorted(by_ref.values(), key=excel_service.sort_key, reverse=True)
     return rows, warnings
 
 
@@ -950,12 +1097,11 @@ def _render_audit() -> None:
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="🗂️", layout="wide")
     _bootstrap()
-    _init_state()
+    _init_state(load_config())
 
     st.markdown(_BASE_CSS, unsafe_allow_html=True)
     _inject_status_css()
 
-    config = load_config()
     _render_sidebar()
 
     # En-tête : logo en haut à gauche, titre, et à droite le bouton de
@@ -977,20 +1123,20 @@ def main() -> None:
     # ----- Zone haute : Informations générales (3 colonnes) -----
     with st.container(border=True):
         st.markdown('<p class="section-title sec-info">Informations générales</p>', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns([3, 3, 2, 1.6])
         with c1:
             controller = st.text_input(
-                "Nom du contrôleur *",
-                value=config.get("default_controller_name", "") or "",
-                placeholder="Ex. : Prénom Nom",
+                "Nom du contrôleur *", key="controller", placeholder="Ex. : Prénom Nom",
             )
         with c2:
-            branch = st.selectbox(
-                "Agence *", options=BRANCHES, index=None,
+            st.selectbox(
+                "Agence *", options=BRANCHES, index=None, key="branch",
                 placeholder="Sélectionnez une agence",
             )
         with c3:
-            control_date = st.date_input("Date du contrôle *", value=dt.date.today())
+            st.date_input("Date du contrôle *", key="control_date", format="DD/MM/YYYY")
+        with c4:
+            st.time_input("Heure *", key="control_time", step=60)
 
     # ----- Zone centrale : Contrôle niveau 1 -----
     _render_control_block()
@@ -1001,7 +1147,7 @@ def main() -> None:
         with st.container(border=True):
             st.markdown('<p class="section-title sec-obs">Observations générales</p>', unsafe_allow_html=True)
             st.markdown('<p class="section-sub">Facultatif</p>', unsafe_allow_html=True)
-            observations = st.text_area(
+            st.text_area(
                 "Observations générales",
                 key="observations",
                 placeholder="Remarques générales sur le contrôle...",
@@ -1028,12 +1174,9 @@ def main() -> None:
     # figure déjà dans le fichier Excel affiché à droite.
     col_pdf, col_xlsx = st.columns(2)
     with col_pdf:
-        _render_actions(
-            controller, branch, control_date, observations,
-            uploaded_files,
-        )
+        _render_actions(uploaded_files)
     with col_xlsx:
-        _render_excel(controller, branch)
+        _render_excel(controller)
 
     # ----- Bas de page : consultation des fichiers de contrôle -----
     _render_audit()

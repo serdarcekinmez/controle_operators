@@ -4,12 +4,15 @@ Service Excel : fichier de contrôle local du contrôleur (.xlsx).
 Chaque contrôleur conserve SON fichier Excel sur son poste. À chaque
 contrôle, il le téléverse dans l'application, qui y ajoute la ligne du
 contrôle (ou la met à jour si le même contrôle y figure déjà), trie les
-lignes par date, puis le lui rend à télécharger.
+lignes par date puis par heure, et le lui rend à télécharger. Un contrôle
+peut aussi en être retiré (même date, même heure, même contrôleur).
 
 Aucun compte en ligne, aucun envoi réseau : tout se fait en mémoire.
 
-Seul l'onglet « Controles » est réécrit : les autres onglets du classeur et
-les colonnes ajoutées à la main par l'utilisateur sont conservés.
+L'onglet « Controles » contient tous les contrôles ; un onglet par agence
+(« Lyon », « Rivoli »...) reprend ceux de l'agence. Les onglets d'agence
+sont recréés à chaque mise à jour ; les autres onglets du classeur et les
+colonnes ajoutées à la main dans « Controles » sont conservés.
 
 Les fonctions lèvent ExcelError avec un message déjà rédigé pour
 l'utilisateur final.
@@ -28,10 +31,12 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
 
 from constants import (
+    BRANCHES,
     CONTROL_KEY_TO_SHEET_COLUMN,
     EXCEL_SHEET_NAME,
     SHEET_COLUMN_LABELS,
     SHEET_COLUMNS,
+    SHEET_LEGACY_TIMESTAMP_LABELS,
     SHEET_PROBLEM_PREFIXES,
     SHEET_VALUE_OK,
     STATUS_PROBLEM,
@@ -46,10 +51,14 @@ class ExcelError(Exception):
     """Erreur de lecture / écriture du fichier Excel, message utilisateur."""
 
 
-# Colonnes au format date / nombre dans le classeur (le reste est du texte).
-_DATE_COLUMNS = {"date_controle": "DD/MM/YYYY", "horodatage": "DD/MM/YYYY HH:MM"}
+# Colonnes au format date / heure / nombre dans le classeur (le reste est du
+# texte).
+_DATE_COLUMNS = {"date_controle": "DD/MM/YYYY", "heure_controle": "HH:MM"}
 _INT_COLUMNS = {"nb_problemes"}
 _STATUS_COLUMNS = set(CONTROL_KEY_TO_SHEET_COLUMN.values())
+
+# Clé interne de l'ancienne colonne « Enregistré le » (voir constants).
+_LEGACY_TIMESTAMP = "horodatage"
 
 _HEADER_FILL = PatternFill("solid", fgColor="9D174D")
 _HEADER_FONT = Font(bold=True, color="FFFFFF")
@@ -58,7 +67,7 @@ _PB_FONT = Font(bold=True, color="B42318")
 _PB_FILL = PatternFill("solid", fgColor="FDECEA")
 
 _COLUMN_WIDTHS = {
-    "report_id": 14, "horodatage": 17, "date_controle": 12, "agence": 16,
+    "report_id": 14, "date_controle": 12, "heure_controle": 8, "agence": 16,
     "controleur": 20, "nb_problemes": 11, "observations": 45,
     "fichier_pdf": 38, "email_envoye": 9,
 }
@@ -79,8 +88,8 @@ def build_row(report: dict) -> dict[str, str]:
     comments = report.get("problem_comments") or {}
     row: dict[str, str] = {
         "report_id": report.get("report_id", ""),
-        "horodatage": report.get("created_at", ""),
         "date_controle": report.get("control_date", ""),
+        "heure_controle": _to_time(report.get("control_time", "")),
         "agence": report.get("branch", ""),
         "controleur": report.get("controller", ""),
         "observations": (report.get("observations") or "").strip(),
@@ -97,10 +106,30 @@ def build_row(report: dict) -> dict[str, str]:
     return row
 
 
+def normalize_name(name: str | None) -> str:
+    """Nom comparable : espaces superflus retirés, casse ignorée."""
+    return " ".join((name or "").split()).casefold()
+
+
+def row_key(row: dict[str, str]) -> tuple[str, str, str]:
+    """
+    Identité d'un contrôle : (date ISO, heure HH:MM, contrôleur normalisé).
+
+    Enregistrer deux fois le même contrôle met à jour sa ligne ; c'est aussi
+    ce que l'on saisit pour supprimer un contrôle du fichier.
+    """
+    return (
+        row.get("date_controle", ""),
+        row.get("heure_controle", ""),
+        normalize_name(row.get("controleur")),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Normalisation des valeurs lues
 # --------------------------------------------------------------------------- #
 _FR_DATE_RE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?")
+_TIME_RE = re.compile(r"(\d{1,2})\s*[:hH]\s*(\d{2})")
 
 
 def _to_iso(value, *, with_time: bool) -> str:
@@ -123,12 +152,29 @@ def _to_iso(value, *, with_time: bool) -> str:
     return text[:16] if with_time else text[:10]
 
 
+def _to_time(value) -> str:
+    """Heure Excel / texte (« 9:05 », « 14h30 », date + heure) -> « HH:MM »."""
+    if value is None or value == "":
+        return ""
+    if isinstance(value, (dt.time, dt.datetime)):
+        return value.strftime("%H:%M")
+    if isinstance(value, (int, float)) and 0 <= value < 1:
+        # Heure saisie dans une cellule sans format : fraction de journée.
+        minutes = min(round(value * 24 * 60), 24 * 60 - 1)
+        return f"{minutes // 60:02d}:{minutes % 60:02d}"
+    text = str(value).strip()
+    match = _TIME_RE.search(text)
+    if match and int(match.group(1)) < 24 and int(match.group(2)) < 60:
+        return f"{int(match.group(1)):02d}:{match.group(2)}"
+    return text
+
+
 def _to_text(column: str, value) -> str:
     """Valeur de cellule -> texte, dans le format attendu par l'application."""
     if column == "date_controle":
         return _to_iso(value, with_time=False)
-    if column == "horodatage":
-        return _to_iso(value, with_time=True)
+    if column in ("heure_controle", _LEGACY_TIMESTAMP):
+        return _to_time(value)
     if value is None:
         return ""
     if isinstance(value, float) and value.is_integer():
@@ -140,12 +186,16 @@ def _to_cell(column: str, text: str):
     """Texte de l'application -> valeur typée pour Excel (dates, nombres)."""
     if not text:
         return None
-    if column in _DATE_COLUMNS:
+    if column == "date_controle":
         try:
-            parsed = dt.datetime.fromisoformat(text)
+            return dt.date.fromisoformat(text)
         except ValueError:
             return text
-        return parsed.date() if column == "date_controle" else parsed
+    if column == "heure_controle":
+        try:
+            return dt.time.fromisoformat(text)
+        except ValueError:
+            return text
     if column in _INT_COLUMNS:
         try:
             return int(text)
@@ -165,6 +215,8 @@ def _header_key(value) -> str | None:
     for column in SHEET_COLUMNS:
         if text in (column.casefold(), SHEET_COLUMN_LABELS[column].casefold()):
             return column
+    if text in (label.casefold() for label in SHEET_LEGACY_TIMESTAMP_LABELS):
+        return _LEGACY_TIMESTAMP
     return None
 
 
@@ -212,16 +264,50 @@ def _read_table(sheet) -> tuple[list, list[list]]:
     return header, data
 
 
-def _rows_as_dicts(header: list, data: list[list]) -> list[dict[str, str]]:
+def _normalize_table(header: list, data: list[list]) -> list[str | None]:
+    """
+    Met le tableau au format de l'application (modifie header et data).
+
+    - l'ancienne colonne « Enregistré le » est retirée ; son heure remplit
+      « Heure » quand celle-ci est vide ;
+    - les colonnes de l'application absentes sont insérées après la colonne
+      qui les précède dans SHEET_COLUMNS (à défaut, tout à droite).
+
+    Retourne la clé de chaque colonne (None pour une colonne personnelle).
+    """
     keys = [_header_key(value) for value in header]
-    result = []
-    for values in data:
-        row = {column: "" for column in SHEET_COLUMNS}
-        for key, value in zip(keys, values):
-            if key:
-                row[key] = _to_text(key, value)
-        result.append(row)
-    return result
+
+    legacy = keys.index(_LEGACY_TIMESTAMP) if _LEGACY_TIMESTAMP in keys else None
+    if legacy is not None:
+        del header[legacy], keys[legacy]
+        stamps = [_to_time(values.pop(legacy)) for values in data]
+    else:
+        stamps = [""] * len(data)
+
+    for idx, column in enumerate(SHEET_COLUMNS):
+        if column in keys:
+            continue
+        before = [keys.index(col) for col in SHEET_COLUMNS[:idx] if col in keys]
+        insert_at = max(before) + 1 if before else len(keys)
+        header.insert(insert_at, SHEET_COLUMN_LABELS[column])
+        keys.insert(insert_at, column)
+        for values in data:
+            values.insert(insert_at, None)
+
+    time_idx = keys.index("heure_controle")
+    for values, stamp in zip(data, stamps):
+        if stamp and values[time_idx] in (None, ""):
+            values[time_idx] = _to_cell("heure_controle", stamp)
+    return keys
+
+
+def _row_texts(keys: list[str | None], values: list) -> dict[str, str]:
+    """Ligne du classeur -> {colonne de l'application: texte}."""
+    row = {column: "" for column in SHEET_COLUMNS}
+    for key, value in zip(keys, values):
+        if key:
+            row[key] = _to_text(key, value)
+    return row
 
 
 def read_rows(data: bytes) -> list[dict[str, str]]:
@@ -232,14 +318,16 @@ def read_rows(data: bytes) -> list[dict[str, str]]:
     """
     sheet = _find_sheet(_open_workbook(data))
     header, rows = _read_table(sheet)
-    return _rows_as_dicts(header, rows)
+    keys = _normalize_table(header, rows)
+    return [_row_texts(keys, values) for values in rows]
 
 
 # --------------------------------------------------------------------------- #
 # Écriture du classeur
 # --------------------------------------------------------------------------- #
-def _sort_key(row: dict[str, str]) -> tuple[str, str]:
-    return (row.get("date_controle", ""), row.get("horodatage", ""))
+def sort_key(row: dict[str, str]) -> tuple[str, str]:
+    """Ordre des contrôles : date, puis heure."""
+    return (row.get("date_controle", ""), row.get("heure_controle", ""))
 
 
 def _style_sheet(sheet, keys: list[str | None], n_rows: int) -> None:
@@ -274,7 +362,9 @@ def _style_sheet(sheet, keys: list[str | None], n_rows: int) -> None:
         sheet.auto_filter.ref = f"A1:{get_column_letter(len(keys))}{n_rows + 1}"
 
 
-def _write_table(sheet, header: list, data: list[list], keys: list[str | None]) -> None:
+def _write_table(
+    sheet, header: list, data: list[list], keys: list[str | None], old_width: int = 0
+) -> None:
     old_rows = sheet.max_row
     for row_idx, values in enumerate([header, *data], start=1):
         for col_idx, (key, value) in enumerate(zip(keys, values), start=1):
@@ -287,17 +377,66 @@ def _write_table(sheet, header: list, data: list[list], keys: list[str | None]) 
                 cell.data_type = "s"
     if old_rows > len(data) + 1:
         sheet.delete_rows(len(data) + 2, old_rows - len(data) - 1)
+    # Colonne retirée (ancienne « Enregistré le ») : la dernière est libérée.
+    if old_width > len(header):
+        sheet.delete_cols(len(header) + 1, old_width - len(header))
     _style_sheet(sheet, keys, len(data))
 
 
-def update_workbook(base: bytes | None, new_rows: list[dict[str, str]]) -> bytes:
+_SHEET_TITLE_FORBIDDEN = re.compile(r"[\[\]:*?/\\]")
+
+
+def _branch_sheet_title(branch) -> str:
+    """Nom d'onglet Excel valide pour une agence (31 caractères au plus)."""
+    return _SHEET_TITLE_FORBIDDEN.sub("", str(branch or "")).strip(" '")[:31].strip()
+
+
+def _write_branch_sheets(workbook, main_sheet, data: list[list], position: dict) -> None:
     """
-    Ajoute (ou met à jour, même « Réf. ») des contrôles dans un classeur.
+    Un onglet par agence, après « Controles », avec les contrôles de l'agence.
+
+    Les onglets portant le nom d'une agence sont recréés à chaque mise à
+    jour (une agence sans contrôle n'a pas d'onglet).
+    """
+    by_branch: dict[str, list[list]] = {}
+    for values in data:
+        title = _branch_sheet_title(_to_text("agence", values[position["agence"]]))
+        if title and title.casefold() != main_sheet.title.casefold():
+            by_branch.setdefault(title, []).append(
+                [values[position[column]] for column in SHEET_COLUMNS]
+            )
+
+    managed = {title.casefold() for title in by_branch}
+    managed |= {_branch_sheet_title(branch).casefold() for branch in BRANCHES}
+    managed.discard(main_sheet.title.casefold())
+    for sheet in list(workbook.worksheets):
+        if sheet.title.casefold() in managed:
+            workbook.remove(sheet)
+
+    header = [SHEET_COLUMN_LABELS[column] for column in SHEET_COLUMNS]
+    index = workbook.worksheets.index(main_sheet)
+    for offset, title in enumerate(sorted(by_branch, key=str.casefold), start=1):
+        sheet = workbook.create_sheet(title, index + offset)
+        _write_table(sheet, header, by_branch[title], list(SHEET_COLUMNS))
+    workbook.active = index
+
+
+def update_workbook(
+    base: bytes | None,
+    new_rows: list[dict[str, str]],
+    delete_keys: tuple | list | set = (),
+) -> bytes:
+    """
+    Ajoute, met à jour ou retire des contrôles dans un classeur.
 
     - base = None -> nouveau classeur avec l'onglet « Controles » ;
-    - sinon, seul l'onglet des contrôles est réécrit, trié par date de
-      contrôle puis par heure d'enregistrement. Les colonnes et onglets
-      ajoutés par l'utilisateur sont conservés.
+    - delete_keys : identités (row_key) des contrôles à retirer ;
+    - new_rows : contrôles à ajouter ; une ligne de même « Réf. » ou de même
+      identité (date, heure, contrôleur) est mise à jour, jamais dupliquée.
+
+    L'onglet des contrôles est trié par date puis par heure ; les onglets
+    d'agence sont recréés. Les colonnes et onglets ajoutés par l'utilisateur
+    sont conservés.
     """
     if base:
         workbook = _open_workbook(base)
@@ -309,36 +448,42 @@ def update_workbook(base: bytes | None, new_rows: list[dict[str, str]]) -> bytes
         sheet.title = EXCEL_SHEET_NAME
         header, data = [], []
 
-    # Colonnes de l'application absentes du fichier : ajoutées à droite.
-    keys = [_header_key(value) for value in header]
-    for column in SHEET_COLUMNS:
-        if column not in keys:
-            header.append(SHEET_COLUMN_LABELS[column])
-            keys.append(column)
-            for values in data:
-                values.append(None)
+    old_width = len(header)
+    keys = _normalize_table(header, data)
     position = {key: idx for idx, key in enumerate(keys) if key}
 
-    # Insertion / mise à jour par référence de contrôle.
-    by_ref: dict[str, list] = {
-        _to_text("report_id", values[position["report_id"]]): values
-        for values in data
-        if values[position["report_id"]] not in (None, "")
-    }
+    # Suppressions.
+    delete_keys = set(delete_keys)
+    texts = [_row_texts(keys, values) for values in data]
+    kept = [
+        (values, row) for values, row in zip(data, texts)
+        if row_key(row) not in delete_keys
+    ]
+
+    # Insertion / mise à jour, par « Réf. » puis par identité.
+    by_ref = {row["report_id"]: idx for idx, (_, row) in enumerate(kept) if row["report_id"]}
+    by_key = {row_key(row): idx for idx, (_, row) in enumerate(kept)}
     for row in new_rows:
-        if row["report_id"] not in by_ref:
-            by_ref[row["report_id"]] = [None] * len(header)
-            data.append(by_ref[row["report_id"]])
-        values = by_ref[row["report_id"]]
+        idx = by_ref.get(row.get("report_id") or None, by_key.get(row_key(row)))
+        if idx is None:
+            idx = len(kept)
+            kept.append(([None] * len(header), {}))
+        values, previous = kept[idx]
+        # Un contrôle déjà dans le fichier garde sa « Réf. ».
+        row = dict(row, report_id=previous.get("report_id") or row.get("report_id", ""))
         for column in SHEET_COLUMNS:
             values[position[column]] = _to_cell(column, row.get(column, ""))
+        kept[idx] = (values, row)
+        if row.get("report_id"):
+            by_ref[row["report_id"]] = idx
+        by_key[row_key(row)] = idx
 
-    # Tri par date (les lignes gardent leurs colonnes personnelles).
-    data.sort(key=lambda values: _sort_key(
-        {col: _to_text(col, values[position[col]]) for col in ("date_controle", "horodatage")}
-    ))
+    # Tri par date puis heure (tri stable : à égalité, ordre d'ajout).
+    kept.sort(key=lambda item: sort_key(item[1]))
+    data = [values for values, _ in kept]
 
-    _write_table(sheet, header, data, keys)
+    _write_table(sheet, header, data, keys, old_width)
+    _write_branch_sheets(workbook, sheet, data, position)
 
     buffer = io.BytesIO()
     workbook.save(buffer)
