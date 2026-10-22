@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS attachments (
 """
 
 
+def new_report_id() -> str:
+    """Identifiant court et unique d'un contrôle (« Réf. »)."""
+    return uuid.uuid4().hex[:12]
+
+
 @dataclass
 class ControlRecord:
     """Données d'un contrôle à insérer."""
@@ -74,7 +79,7 @@ class ControlRecord:
         # un même contrôle ajouté deux fois met à jour sa ligne au lieu
         # d'en créer une seconde.
         if not self.report_id:
-            self.report_id = uuid.uuid4().hex[:12]
+            self.report_id = new_report_id()
 
 
 def _connect() -> sqlite3.Connection:
@@ -111,7 +116,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for row in orphans:
         conn.execute(
             "UPDATE controls SET report_id = ? WHERE id = ?",
-            (uuid.uuid4().hex[:12], row["id"]),
+            (new_report_id(), row["id"]),
         )
     if orphans:
         logger.info("Identifiants attribués à %s ancien(s) rapport(s).", len(orphans))

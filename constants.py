@@ -121,16 +121,18 @@ MAX_IMAGE_DIMENSION = 2200
 # laissés intacts).
 EXCEL_SHEET_NAME = "Controles"
 
-# Début du nom de fichier téléchargé quand aucune agence n'est connue
-# (sinon : « Agence - AAMMJJ - Prénom.xlsx »).
+# Fin du nom de fichier téléchargé quand le contrôleur n'est pas connu
+# (sinon : « AAMMJJ - Prénom.xlsx »).
 EXCEL_DEFAULT_STEM = "Controles"
 
 # Colonnes de l'onglet, dans l'ordre. Les en-têtes du fichier sont les
-# libellés de SHEET_COLUMN_LABELS ; la « Réf. » identifie chaque contrôle.
+# libellés de SHEET_COLUMN_LABELS. Un contrôle est identifié par sa date,
+# son heure et son contrôleur (voir excel_service.row_key) ; la « Réf. »
+# permet de le reconnaître d'un fichier à l'autre.
 SHEET_COLUMNS: list[str] = [
     "report_id",
-    "horodatage",
     "date_controle",
+    "heure_controle",
     "agence",
     "controleur",
     "journee_comptable",
@@ -156,8 +158,8 @@ CONTROL_KEY_TO_SHEET_COLUMN: dict[str, str] = {
 # Libellés lisibles : en-têtes du fichier Excel et du tableau de consultation.
 SHEET_COLUMN_LABELS: dict[str, str] = {
     "report_id": "Réf.",
-    "horodatage": "Enregistré le",
     "date_controle": "Date",
+    "heure_controle": "Heure",
     "agence": "Agence",
     "controleur": "Contrôleur",
     "journee_comptable": "Journée comptable",
@@ -170,6 +172,11 @@ SHEET_COLUMN_LABELS: dict[str, str] = {
     "fichier_pdf": "Fichier PDF",
     "email_envoye": "E-mail",
 }
+
+# Ancienne colonne « Enregistré le » (date + heure d'enregistrement) des
+# fichiers créés avant la colonne « Heure » : son heure est reprise dans
+# « Heure », puis la colonne est retirée.
+SHEET_LEGACY_TIMESTAMP_LABELS: tuple[str, ...] = ("horodatage", "Enregistré le")
 
 # Valeur inscrite dans le fichier pour un point conforme.
 SHEET_VALUE_OK = "RAS"

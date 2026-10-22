@@ -21,7 +21,8 @@ future.
    votre fichier de contrôle Excel (section 7).
 2. Vous saisissez le nom du contrôleur.
 3. Vous choisissez l'agence dans une liste déroulante.
-4. Vous confirmez la date du contrôle (par défaut : aujourd'hui).
+4. Vous confirmez la date et l'heure du contrôle (par défaut : aujourd'hui,
+   heure d'ouverture de l'application).
 5. Pour chacun des cinq points de « Contrôle niveau 1 », vous choisissez un
    statut **OK** (vert) ou **Problème** (rouge). En cas de problème, un
    commentaire est obligatoire.
@@ -34,7 +35,8 @@ future.
      page 1 = rapport, pages suivantes = documents joints.
    - Le contrôle est **ajouté automatiquement** à votre fichier Excel.
 9. Vous téléchargez/ouvrez le PDF ; une copie locale est conservée.
-10. Vous téléchargez votre **fichier de contrôle Excel** mis à jour.
+10. Vous cliquez sur **« 💾 Enregistrer dans Excel »** (utile aussi sans PDF),
+    puis vous téléchargez votre **fichier de contrôle Excel** mis à jour.
 
 ---
 
@@ -129,7 +131,9 @@ simple double-clic sur cette icône lancera l'application.
 
 1. Renseignez le **nom du contrôleur** (obligatoire).
 2. Choisissez l'**agence** (obligatoire).
-3. Vérifiez la **date du contrôle** (par défaut : aujourd'hui).
+3. Vérifiez la **date** et l'**heure du contrôle** (par défaut :
+   aujourd'hui, à l'heure d'ouverture de l'application — corrigez-la à
+   chaque nouveau contrôle).
 4. Pour chaque point de **Contrôle niveau 1**, cliquez sur **OK** (vert) ou
    **Problème** (rouge). Si vous choisissez « Problème », un champ de
    commentaire apparaît juste en dessous : il est **obligatoire**.
@@ -153,17 +157,43 @@ autre) : le fichier ne quitte jamais votre ordinateur.
 1. Dans le bloc **« Fichier de contrôle Excel »**, champ **« Mettre à jour
    votre fichier de contrôle »** : choisissez votre fichier (en général dans
    le dossier **Téléchargements**).
-2. Remplissez le contrôle et cliquez sur **« Créer le rapport PDF »** :
-   le contrôle est **ajouté automatiquement** au fichier, qui est trié par
-   date de contrôle.
+2. Remplissez le contrôle (agence, date, **heure**, points de contrôle) et
+   cliquez sur **« 💾 Enregistrer dans Excel »** : le contrôle est ajouté
+   comme une nouvelle ligne du fichier. « Créer le rapport PDF » l'enregistre
+   aussi automatiquement (avec le nom du PDF) ; cliquer ensuite sur
+   « Enregistrer dans Excel » ne crée pas de doublon.
 3. Cliquez sur **« ⬇️ Télécharger le fichier de contrôle »** : le fichier mis
    à jour est enregistré dans vos Téléchargements.
 4. Au contrôle suivant, chargez **ce dernier fichier** (le plus récent).
 
-Le fichier téléchargé est nommé **« Agence - AAMMJJ - Prénom.xlsx »**, par
-exemple `Lyon - 261016 - Jean.xlsx` (agence du contrôle, date du jour,
-prénom du contrôleur) : le plus récent est toujours facile à retrouver.
-Vous pouvez supprimer les anciennes versions.
+Le fichier téléchargé est nommé **« AAMMJJ - Prénom.xlsx »**, par exemple
+`261016 - Jean.xlsx` (date du jour, prénom du contrôleur) : le plus récent
+est toujours facile à retrouver. Vous pouvez supprimer les anciennes
+versions.
+
+### Contenu du fichier
+
+- Onglet **« Controles »** : tous les contrôles, avec une colonne **Date**
+  et une colonne **Heure** séparées. Les lignes sont triées par date puis,
+  pour une même date, par heure : un nouveau contrôle arrive normalement en
+  dernière ligne.
+- **Un onglet par agence** (« Athens », « Lyon »...) : les contrôles de
+  cette agence, dans le même ordre. Ces onglets sont recréés à chaque
+  enregistrement : ne les modifiez pas à la main (vos notes vont dans
+  « Controles » ou dans un onglet portant un autre nom).
+- Un contrôle est identifié par **sa date, son heure et son contrôleur** :
+  l'enregistrer une seconde fois met à jour sa ligne au lieu de la
+  dupliquer. Deux contrôles du même contrôleur doivent donc avoir des
+  heures différentes (un message le rappelle).
+
+### Supprimer un contrôle
+
+Dans le bloc « Fichier de contrôle Excel », ouvrez **« 🗑️ Supprimer un
+contrôle du fichier »**, saisissez la **date**, l'**heure** (colonne
+« Heure » du fichier) et le **nom du contrôleur**, puis cliquez sur
+**« Supprimer ce contrôle »**. La ligne est retirée de l'onglet
+« Controles » et de l'onglet de l'agence. Téléchargez ensuite le fichier
+pour conserver la suppression (l'ancien fichier, lui, n'est pas modifié).
 
 > **Première utilisation** : cliquez sur le bouton rouge **« 🆕 Première
 > fois ? Créez votre 1er fichier Excel en cliquant ici »**, en haut à droite
@@ -184,10 +214,13 @@ n'est chargé, ce bloc affiche un rappel des deux possibilités.
 
 Bon à savoir :
 
-- Plusieurs rapports créés dans la même séance sont tous ajoutés.
-- Un contrôle déjà présent (même « Réf. ») est **mis à jour**, jamais
-  dupliqué. La colonne « E-mail » restera à « Non » tant que l'envoi
-  Outlook n'est pas disponible.
+- Plusieurs contrôles enregistrés dans la même séance sont tous ajoutés.
+- Un contrôle déjà présent (même « Réf. », ou même date, heure et
+  contrôleur) est **mis à jour**, jamais dupliqué. La colonne « E-mail »
+  restera à « Non » tant que l'envoi Outlook n'est pas disponible.
+- Les fichiers créés avant la colonne « Heure » sont convertis au premier
+  chargement : l'heure de l'ancienne colonne « Enregistré le » est reprise
+  dans « Heure ».
 - Vous pouvez ouvrir et annoter le fichier dans Excel : les colonnes et les
   onglets que vous ajoutez sont conservés. Ne renommez pas l'onglet
   **« Controles »** ni ses en-têtes.
@@ -249,8 +282,10 @@ de l'application (**« Historique local »**).
 | « Streamlit n'est pas installé » | Relancez `SETUP.bat` (l'installation des dépendances a probablement échoué). |
 | « Ce fichier n'a pas pu être ouvert » | Le fichier doit être un classeur Excel `.xlsx` non protégé par mot de passe. Fermez-le dans Excel, puis rechargez-le. |
 | « Ce fichier ne contient pas d'onglet Controles » | Chargez le fichier de contrôle téléchargé depuis l'application (ou retirez-le et utilisez le bouton rouge en haut à droite de la page). L'onglet « Controles » ne doit pas être renommé. |
-| Le contrôle du jour n'est pas dans mon fichier | Le fichier a été téléchargé avant « Créer le rapport PDF », ou sans avoir chargé votre fichier. Chargez votre fichier, puis téléchargez-le à nouveau. |
-| Windows ajoute « (1) » au nom du fichier téléchargé | Normal si un fichier du même nom existe déjà. Chargez le plus récent (date AAMMJJ la plus grande) : le nom est recalculé à chaque téléchargement. |
+| Le fichier Excel téléchargé est vide / le contrôle du jour n'y est pas | Le fichier a été téléchargé avant « 💾 Enregistrer dans Excel » (ou « Créer le rapport PDF »), ou sans avoir chargé votre fichier. Chargez votre fichier, cliquez sur « Enregistrer dans Excel », puis téléchargez-le à nouveau. |
+| « Le fichier Excel contient déjà un contrôle de … à … » | Un autre contrôle a la même date, la même heure et le même contrôleur. Corrigez l'heure du contrôle. |
+| « Aucun contrôle trouvé » lors d'une suppression | Vérifiez la date, l'heure (colonne « Heure ») et le nom du contrôleur tels qu'ils figurent dans le fichier. |
+| Windows ajoute « (1) » au nom du fichier téléchargé | Normal si un fichier du même nom existe déjà (plusieurs téléchargements le même jour). Chargez le plus récent (« Modifié le » le plus récent dans l'Explorateur). |
 
 Pour toute erreur, le détail technique est consigné dans **`logs/app.log`**.
 
