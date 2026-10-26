@@ -13,7 +13,7 @@ from pathlib import Path
 # --------------------------------------------------------------------------- #
 # Identité de l'application
 # --------------------------------------------------------------------------- #
-APP_TITLE = "Application de contrôle agences"
+APP_TITLE = "Contrôle des agences"
 APP_SUBTITLE = "Contrôle niveau 1"
 
 # --------------------------------------------------------------------------- #
@@ -30,8 +30,6 @@ DB_PATH: Path = DATA_DIR / "controles.db"
 LOG_PATH: Path = LOGS_DIR / "app.log"
 
 CONFIG_PATH: Path = BASE_DIR / "config.json"
-
-LOGO_PATH: Path = BASE_DIR / "assets" / "logo_interchange.png"
 
 # Dossiers à créer automatiquement au démarrage.
 REQUIRED_DIRS = (DATA_DIR, REPORTS_DIR, UPLOADS_DIR, LOGS_DIR)

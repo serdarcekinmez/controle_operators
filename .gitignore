@@ -1,10 +1,14 @@
 # Secrets / configuration locale (NE JAMAIS versionner)
 config.json
-.streamlit/secrets.toml
 
 # Environnement virtuel
 .venv/
 venv/
+
+# Interface React : les dependances ne sont pas versionnees.
+# frontend/dist (interface construite) EST versionne : les postes
+# utilisateurs n'ont pas besoin de Node.js.
+node_modules/
 
 # Python
 __pycache__/

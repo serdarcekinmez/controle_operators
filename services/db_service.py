@@ -218,7 +218,7 @@ def get_recent_controls(limit: int = 10) -> list[sqlite3.Row]:
         with _connect() as conn:
             cur = conn.execute(
                 """
-                SELECT branch_name, controller_name, control_date,
+                SELECT report_id, branch_name, controller_name, control_date,
                        created_at, email_sent, pdf_path
                   FROM controls
                  ORDER BY id DESC
@@ -231,3 +231,17 @@ def get_recent_controls(limit: int = 10) -> list[sqlite3.Row]:
         logger.error("Lecture de l'historique impossible : %s", exc)
         return []
 
+
+def get_pdf_path(report_id: str) -> str | None:
+    """Chemin du PDF d'un contrôle (le plus récent pour cette « Réf. »)."""
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT pdf_path FROM controls WHERE report_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (report_id,),
+            ).fetchone()
+            return row["pdf_path"] if row else None
+    except sqlite3.Error as exc:
+        logger.error("Lecture du chemin du PDF impossible : %s", exc)
+        return None
