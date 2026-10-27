@@ -27,3 +27,8 @@ logs/
 Thumbs.db
 .idea/
 .vscode/
+
+.venv-package/
+build/
+dist/
+*.spec

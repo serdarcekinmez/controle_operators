@@ -28,6 +28,9 @@ import socket
 import sys
 import threading
 import webbrowser
+import time
+import urllib.request
+from version import VERSION
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_file, send_from_directory
@@ -71,8 +74,8 @@ from services.pdf_service import (
 logger = get_logger()
 
 HOST = "127.0.0.1"
-PORT = 8600
-APP_URL = f"http://{HOST}:{PORT}"
+PORTS = (8600, 8601, 8602)
+APP_ID = "fr.controle-agences.desktop"
 
 DIST_DIR: Path = BASE_DIR / "frontend" / "dist"
 
@@ -579,38 +582,67 @@ def frontend(path: str = ""):
 # --------------------------------------------------------------------------- #
 # Lancement
 # --------------------------------------------------------------------------- #
-def _port_in_use() -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.5)
-        return sock.connect_ex((HOST, PORT)) == 0
+@app.get("/api/identity")
+def identity():
+    return jsonify(app_id=APP_ID, version=VERSION)
+
+
+def identified(port):
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://{HOST}:{port}/api/identity", timeout=0.4) as response:
+            value = json.loads(response.read(4096))
+            return value.get("app_id") == APP_ID and value.get("version") == VERSION
+    except (OSError, ValueError):
+        return False
 
 
 def main() -> None:
+    from waitress import create_server
     open_browser = "--no-browser" not in sys.argv
-    # Console Windows : les accents ne doivent jamais faire planter le lancement.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(errors="replace")
     ensure_directories()
     db_service.init_db()
-
-    if _port_in_use():
-        print(f"L'application est déjà ouverte : {APP_URL}")
+    if not (DIST_DIR / "index.html").is_file():
+        raise RuntimeError("Interface React introuvable.")
+    for port in PORTS:
+        if identified(port):
+            if open_browser:
+                webbrowser.open(f"http://{HOST}:{port}")
+            return
+    for port in PORTS:
+        try:
+            server = create_server(app, host=HOST, port=port, threads=6)
+            break
+        except OSError:
+            continue
+    else:
+        raise RuntimeError("Les ports 8600, 8601 et 8602 sont déjà utilisés. Impossible de démarrer l’application. Veuillez fermer une autre instance de Contrôle Agences si elle est ouverte, puis réessayer.")
+    worker = threading.Thread(target=server.run, daemon=True)
+    worker.start()
+    try:
+        for _ in range(50):
+            if identified(port):
+                break
+            if not worker.is_alive():
+                raise RuntimeError("Le serveur n’a pas pu démarrer.")
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("Le serveur ne répond pas.")
         if open_browser:
-            webbrowser.open(APP_URL)
-        return
-
-    from waitress import serve
-
-    print("=" * 60)
-    print("  Contrôle des agences — l'application est démarrée.")
-    print(f"  Adresse : {APP_URL}")
-    print("  NE FERMEZ PAS cette fenêtre tant que vous utilisez l'application.")
-    print("=" * 60)
-    logger.info("Application démarrée sur %s", APP_URL)
-    if open_browser:
-        threading.Timer(1.2, webbrowser.open, args=(APP_URL,)).start()
-    serve(app, host=HOST, port=PORT, threads=6, _quiet=True)
+            webbrowser.open(f"http://{HOST}:{port}")
+        worker.join()
+    finally:
+        server.close()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        logger.exception("Échec du démarrage")
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, str(exc), "Contrôle Agences", 0x10)
+        else:
+            print(str(exc), file=sys.stderr)
+        sys.exit(1)

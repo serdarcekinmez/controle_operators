@@ -9,6 +9,8 @@ de ces valeurs dans le reste du code.
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import sys
 
 # --------------------------------------------------------------------------- #
 # Identité de l'application
@@ -21,15 +23,17 @@ APP_SUBTITLE = "Contrôle niveau 1"
 # --------------------------------------------------------------------------- #
 BASE_DIR: Path = Path(__file__).resolve().parent
 
-DATA_DIR: Path = BASE_DIR / "data"
-REPORTS_DIR: Path = BASE_DIR / "reports"
-UPLOADS_DIR: Path = BASE_DIR / "uploads"
-LOGS_DIR: Path = BASE_DIR / "logs"
+USER_DIR = Path(os.environ.get("CONTROLE_AGENCES_DATA_DIR") or (str(Path(os.environ["LOCALAPPDATA"]) / "ControleAgences") if getattr(sys, "frozen", False) else str(BASE_DIR))).resolve()
+
+DATA_DIR: Path = USER_DIR / "data"
+REPORTS_DIR: Path = USER_DIR / "reports"
+UPLOADS_DIR: Path = USER_DIR / "uploads"
+LOGS_DIR: Path = USER_DIR / "logs"
 
 DB_PATH: Path = DATA_DIR / "controles.db"
 LOG_PATH: Path = LOGS_DIR / "app.log"
 
-CONFIG_PATH: Path = BASE_DIR / "config.json"
+CONFIG_PATH: Path = USER_DIR / "config.json"
 
 # Dossiers à créer automatiquement au démarrage.
 REQUIRED_DIRS = (DATA_DIR, REPORTS_DIR, UPLOADS_DIR, LOGS_DIR)
