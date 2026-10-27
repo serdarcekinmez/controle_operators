@@ -23,7 +23,24 @@ APP_SUBTITLE = "Contrôle niveau 1"
 # --------------------------------------------------------------------------- #
 BASE_DIR: Path = Path(__file__).resolve().parent
 
-USER_DIR = Path(os.environ.get("CONTROLE_AGENCES_DATA_DIR") or (str(Path(os.environ["LOCALAPPDATA"]) / "ControleAgences") if getattr(sys, "frozen", False) else str(BASE_DIR))).resolve()
+
+def _user_dir() -> Path:
+    """
+    Dossier des données de l'utilisateur (base, rapports, documents, journal,
+    config.json). Exécutable Windows : %LOCALAPPDATA%\\ControleAgences, hors du
+    dossier de l'application, pour qu'une mise à jour ne touche jamais les
+    données. Développement : la racine du projet, comme en V4.
+    """
+    override = os.environ.get("CONTROLE_AGENCES_DATA_DIR")
+    if override:
+        return Path(override).resolve()
+    if getattr(sys, "frozen", False):
+        local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return (Path(local) / "ControleAgences").resolve()
+    return BASE_DIR
+
+
+USER_DIR: Path = _user_dir()
 
 DATA_DIR: Path = USER_DIR / "data"
 REPORTS_DIR: Path = USER_DIR / "reports"

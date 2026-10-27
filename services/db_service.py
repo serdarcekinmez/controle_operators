@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from constants import DATA_DIR, DB_PATH
+from services.errors import StartupError
 from services.logging_service import get_logger
 
 logger = get_logger()
@@ -123,13 +124,30 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 def init_db() -> None:
-    """Crée les tables si elles n'existent pas, puis applique les migrations."""
+    """
+    Crée les tables si elles n'existent pas, puis applique les migrations.
+
+    Une base illisible empêche le démarrage (StartupError) : sans cela,
+    l'application démarrerait et chaque rapport serait perdu pour l'historique.
+    """
     try:
-        with _connect() as conn:
-            conn.executescript(_SCHEMA)
-            _migrate(conn)
-    except sqlite3.Error as exc:
+        conn = _connect()
+        try:
+            with conn:
+                conn.executescript(_SCHEMA)
+                _migrate(conn)
+            if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise sqlite3.DatabaseError("quick_check a échoué")
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError) as exc:
         logger.error("Initialisation de la base impossible : %s", exc)
+        raise StartupError(
+            "La base de données de Contrôle Agences est illisible ou inaccessible :\n"
+            f"{DB_PATH}\n\n({exc})\n\n"
+            "Ne supprimez pas ce fichier. Fermez l'application et faites vérifier "
+            "ou restaurer la sauvegarde du dossier de données."
+        ) from exc
 
 
 def insert_control(record: ControlRecord) -> int | None:
@@ -171,8 +189,8 @@ def insert_control(record: ControlRecord) -> int | None:
 
 def insert_attachment(
     control_id: int, original_filename: str, stored_path: str, file_type: str
-) -> None:
-    """Enregistre un document joint lié à un contrôle."""
+) -> bool:
+    """Enregistre un document joint lié à un contrôle (False en cas d'erreur)."""
     now = dt.datetime.now().isoformat(timespec="seconds")
     try:
         with _connect() as conn:
@@ -185,8 +203,10 @@ def insert_attachment(
                 """,
                 (control_id, original_filename, stored_path, file_type, now),
             )
+        return True
     except sqlite3.Error as exc:
         logger.error("Insertion de la pièce jointe impossible : %s", exc)
+        return False
 
 
 def update_email_status(

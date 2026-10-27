@@ -28,7 +28,10 @@ Thumbs.db
 .idea/
 .vscode/
 
-.venv-package/
-build/
-dist/
-*.spec
+# Construction Windows (packaging/build.ps1). Motifs ancrés à la racine :
+# frontend/dist doit rester versionné.
+/.venv-package/
+/build/
+/dist/
+/release/
+/*.spec

@@ -1,5 +1,5 @@
 """
-Application de contrôle agences — Contrôle niveau 1 (V4).
+Application de contrôle agences — Contrôle niveau 1 (V5).
 
 Serveur LOCAL (poste de travail) : il sert l'interface React déjà construite
 (frontend/dist) et une petite API JSON qui réutilise les services Python
@@ -12,7 +12,7 @@ disque), les contrôles enregistrés pendant la séance et les suppressions,
 et les renvoie à chaque appel. Le classeur à jour est recalculé à partir de
 ces trois éléments, comme dans la V3.
 
-Lancement : RUN_APP.bat (ou « python server.py »).
+Lancement : ControleAgences.exe (Windows), RUN_APP.bat ou « python server.py ».
 """
 
 from __future__ import annotations
@@ -27,14 +27,13 @@ import os
 import socket
 import sys
 import threading
-import webbrowser
 import time
-import urllib.request
-from version import VERSION
+import webbrowser
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from pypdf import PdfReader
+from werkzeug.security import safe_join
 
 from constants import (
     ALLOWED_UPLOAD_EXTENSIONS,
@@ -44,6 +43,7 @@ from constants import (
     BRANCHES,
     CONTROL_ITEMS,
     CONTROL_KEYS,
+    LOG_PATH,
     REPORTS_DIR,
     SHEET_COLUMN_LABELS,
     SHEET_COLUMNS,
@@ -51,17 +51,21 @@ from constants import (
     SHEET_VALUE_OK,
     STATUS_OK,
     STATUS_PROBLEM,
+    USER_DIR,
 )
-from services import db_service, excel_service
+from services import db_service, excel_service, instance_service
 from services.config_service import load_config
+from services.errors import StartupError
 from services.excel_service import ExcelError
 from services.file_service import (
     ensure_directories,
     get_extension,
     is_allowed_upload,
     is_image,
+    resolve_stored_path,
     save_report_pdf,
     save_uploaded_file,
+    to_stored_path,
 )
 from services.logging_service import get_logger
 from services.pdf_service import (
@@ -70,12 +74,21 @@ from services.pdf_service import (
     build_final_report,
     image_to_pdf_bytes,
 )
+from version import VERSION
 
 logger = get_logger()
 
 HOST = "127.0.0.1"
 PORTS = (8600, 8601, 8602)
 APP_ID = "fr.controle-agences.desktop"
+# Identifiant aléatoire de ce processus, publié par /api/identity et dans
+# instance.json : un second lancement ne réutilise que cette instance-là.
+INSTANCE_ID = instance_service.new_instance_id()
+PORTS_BUSY_MESSAGE = (
+    "Les ports 8600, 8601 et 8602 sont déjà utilisés. Impossible de démarrer "
+    "l’application. Veuillez fermer une autre instance de Contrôle Agences si "
+    "elle est ouverte, puis réessayer."
+)
 
 DIST_DIR: Path = BASE_DIR / "frontend" / "dist"
 
@@ -85,6 +98,54 @@ app = Flask(__name__, static_folder=None)
 # Documents scannés : quelques dizaines de Mo au plus.
 app.config["MAX_CONTENT_LENGTH"] = 80 * 1024 * 1024
 app.json.ensure_ascii = False
+
+# Adresses acceptées dans l'en-tête Host, fixées au démarrage (main). Elles
+# bloquent les attaques par « DNS rebinding » ; vide = tests sans serveur.
+_allowed_hosts: set[str] = set()
+
+# Requêtes en cours : « Quitter l'application » attend leur fin (écriture
+# d'un PDF, de la base...) avant d'arrêter le processus.
+_activity = threading.Condition()
+_active_requests = 0
+_closing = False
+
+
+def _track_requests(wsgi_app):
+    def wrapped(environ, start_response):
+        global _active_requests
+        with _activity:
+            _active_requests += 1
+        try:
+            return wsgi_app(environ, start_response)
+        finally:
+            with _activity:
+                _active_requests -= 1
+                _activity.notify_all()
+
+    return wrapped
+
+
+app.wsgi_app = _track_requests(app.wsgi_app)
+
+
+@app.before_request
+def _local_only():
+    """
+    Le serveur n'écoute que sur 127.0.0.1, mais un site ouvert dans le
+    navigateur peut tenter de l'appeler : on refuse les noms d'hôte inconnus
+    et les requêtes d'écriture venant d'une autre origine.
+    """
+    if _allowed_hosts and request.host not in _allowed_hosts:
+        return jsonify(error="Adresse non autorisée."), 403
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("Origin")
+        if origin is not None and origin != f"http://{request.host}":
+            return jsonify(error="Requête refusée (origine extérieure)."), 403
+        if request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
+            return jsonify(error="Requête refusée (origine extérieure)."), 403
+        if _closing and request.path != "/api/quit":
+            return jsonify(error="L'application est en cours de fermeture."), 503
+    return None
 
 
 class ApiError(Exception):
@@ -111,7 +172,7 @@ def _unexpected(exc: Exception):
     logger.exception("Erreur inattendue sur %s", request.path)
     return jsonify(
         error="Une erreur inattendue est survenue. Le détail technique est "
-        "dans le fichier logs/app.log."
+        f"dans le fichier {LOG_PATH}."
     ), 500
 
 
@@ -441,22 +502,27 @@ def create_report():
 
     try:
         pdf_path = save_report_pdf(
-            result.pdf_bytes, report["branch"], control_date, report["controller"]
+            result.pdf_bytes,
+            report["branch"],
+            control_date,
+            report["controller"],
+            report["control_time"],
         )
     except OSError as exc:
         logger.exception("Écriture du PDF final impossible.")
         raise ApiError(
             "Le PDF a été généré mais n'a pas pu être enregistré sur le poste "
-            "(droits ou disque plein). Consultez logs/app.log."
+            f"(droits ou disque plein). Consultez {LOG_PATH}."
         ) from exc
 
     stored_uploads: list[tuple[str, str, str]] = []
     for att in attachments:
         try:
             stored = save_uploaded_file(att.data, att.filename, report["branch"], control_date)
-            stored_uploads.append((att.filename, str(stored), get_extension(att.filename)))
+            stored_uploads.append((att.filename, to_stored_path(stored), get_extension(att.filename)))
         except OSError:
             logger.exception("Sauvegarde du fichier téléversé impossible : %s", att.filename)
+            warnings.append(f"Copie locale du document impossible : {att.filename}")
 
     control_id = db_service.insert_control(
         db_service.ControlRecord(
@@ -465,14 +531,21 @@ def create_report():
             control_date=report["control_date"],
             statuses=report["statuses"],
             observations=report["observations"],
-            pdf_path=str(pdf_path),
+            pdf_path=to_stored_path(pdf_path),
             problem_comments=report["problem_comments"],
             report_id=report["report_id"],
         )
     )
-    if control_id is not None:
-        for original, stored_path, file_type in stored_uploads:
-            db_service.insert_attachment(control_id, original, stored_path, file_type)
+    if control_id is None:
+        # Le PDF existe sur le disque, mais il n'apparaîtrait pas dans
+        # l'historique : l'utilisateur doit le savoir.
+        raise ApiError(
+            "Le PDF a été enregistré sur le poste mais l'historique local n'a pas "
+            f"pu être mis à jour. Fichier : {pdf_path}. Détail : {LOG_PATH}."
+        )
+    for original, stored_path, file_type in stored_uploads:
+        if not db_service.insert_attachment(control_id, original, stored_path, file_type):
+            warnings.append(f"Document non inscrit dans l'historique : {original}")
 
     report["filename"] = pdf_path.name
     return jsonify(
@@ -486,8 +559,8 @@ def create_report():
 @app.get("/api/reports/<report_id>")
 def get_report_pdf(report_id: str):
     """PDF d'un contrôle (?download=1 pour le télécharger)."""
-    stored = db_service.get_pdf_path(report_id)
-    path = Path(stored).resolve() if stored else None
+    stored = resolve_stored_path(db_service.get_pdf_path(report_id))
+    path = stored.resolve() if stored else None
     # On ne sert que des fichiers du dossier reports/ de l'application.
     if path is None or not path.is_file() or not path.is_relative_to(REPORTS_DIR.resolve()):
         return jsonify(error="Ce rapport PDF est introuvable sur ce poste."), 404
@@ -524,14 +597,14 @@ def history():
     """Derniers rapports PDF créés sur ce poste."""
     items = []
     for row in db_service.get_recent_controls(limit=12):
-        pdf = row["pdf_path"] or ""
+        pdf = resolve_stored_path(row["pdf_path"])
         items.append({
             "report_id": row["report_id"] or "",
             "branch": row["branch_name"],
             "controller": row["controller_name"],
             "control_date": row["control_date"],
             "created_at": row["created_at"],
-            "has_pdf": bool(pdf) and Path(pdf).is_file(),
+            "has_pdf": pdf is not None and pdf.is_file(),
         })
     return jsonify(items=items)
 
@@ -540,7 +613,16 @@ def history():
 # Fermeture de l'application
 # --------------------------------------------------------------------------- #
 def _shutdown() -> None:
-    """Arrête le serveur : la fenêtre noire de RUN_APP.bat se ferme."""
+    """
+    Arrête le processus une fois les requêtes en cours terminées (PDF en
+    cours d'écriture, base...). La fenêtre de l'application se ferme.
+    """
+    with _activity:
+        finished = _activity.wait_for(lambda: _active_requests == 0, timeout=120)
+    if not finished:
+        logger.warning("Arrêt forcé : des requêtes étaient encore en cours.")
+    # Laisse le temps à la dernière réponse de partir.
+    time.sleep(0.5)
     logger.info("Application fermée par l'utilisateur.")
     logging.shutdown()
     os._exit(0)
@@ -549,12 +631,14 @@ def _shutdown() -> None:
 @app.post("/api/quit")
 def quit_app():
     """Bouton « Quitter l'application » (après confirmation dans la page)."""
+    global _closing
     # Corps JSON exigé : un autre site ouvert dans le navigateur ne peut pas
     # envoyer cette requête sans l'accord du serveur (contrôle CORS).
     if not request.is_json:
         raise ApiError("Requête invalide.")
-    # Laisse le temps à la réponse de partir avant l'arrêt.
-    threading.Timer(0.5, _shutdown).start()
+    if not _closing:
+        _closing = True
+        threading.Thread(target=_shutdown, daemon=True).start()
     return jsonify(ok=True)
 
 
@@ -566,7 +650,8 @@ def quit_app():
 def frontend(path: str = ""):
     if path.startswith("api/"):
         return jsonify(error="Adresse inconnue."), 404
-    if path and (DIST_DIR / path).is_file():
+    asset = safe_join(str(DIST_DIR), path) if path else None
+    if asset and os.path.isfile(asset):
         return send_from_directory(DIST_DIR, path)
     if not (DIST_DIR / "index.html").is_file():
         return (
@@ -584,65 +669,130 @@ def frontend(path: str = ""):
 # --------------------------------------------------------------------------- #
 @app.get("/api/identity")
 def identity():
-    return jsonify(app_id=APP_ID, version=VERSION)
+    return jsonify(app_id=APP_ID, version=VERSION, instance=INSTANCE_ID)
 
 
-def identified(port):
+def _bind(port: int) -> socket.socket:
+    """
+    Socket d'écoute sur 127.0.0.1:port. Sous Windows, SO_EXCLUSIVEADDRUSE
+    empêche de partager un port déjà utilisé par un autre programme
+    (SO_REUSEADDR, qu'active waitress, le permettrait).
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(f"http://{HOST}:{port}/api/identity", timeout=0.4) as response:
-            value = json.loads(response.read(4096))
-            return value.get("app_id") == APP_ID and value.get("version") == VERSION
-    except (OSError, ValueError):
-        return False
+        if sys.platform == "win32":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((HOST, port))
+        sock.listen(64)
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
+def _open_browser(url: str, open_browser: bool) -> None:
+    if not open_browser:
+        return
+    try:
+        opened = webbrowser.open(url)
+    except Exception:
+        logger.exception("Ouverture du navigateur impossible")
+        opened = False
+    if not opened:
+        from launcher import show_message
+
+        show_message(
+            "Contrôle Agences est démarré, mais le navigateur n'a pas pu être "
+            f"ouvert automatiquement.\n\nOuvrez cette adresse : {url}",
+            error=False,
+        )
+
+
+def _reuse_running_instance(open_browser: bool) -> None:
+    """Un autre processus sert déjà ce dossier de données : on le rouvre."""
+    found = instance_service.find_running(HOST, APP_ID, wait=20)
+    if found is None:
+        raise StartupError(
+            "Contrôle Agences est déjà en cours d’exécution mais ne répond pas. "
+            "Patientez quelques secondes puis réessayez. Si le problème persiste, "
+            "fermez « ControleAgences » dans le Gestionnaire des tâches."
+        )
+    port, running = found
+    if running.get("version") != VERSION:
+        raise StartupError(
+            f"Une autre version de Contrôle Agences ({running.get('version')}) est "
+            "déjà ouverte. Fermez-la avec le bouton « Quitter l’application », "
+            "puis relancez Contrôle Agences."
+        )
+    logger.info("Instance déjà ouverte sur le port %s : réutilisée.", port)
+    _open_browser(f"http://{HOST}:{port}", open_browser)
 
 
 def main() -> None:
     from waitress import create_server
+
     open_browser = "--no-browser" not in sys.argv
-    ensure_directories()
+    try:
+        ensure_directories()
+    except OSError as exc:
+        raise StartupError(
+            f"Le dossier de données est inaccessible :\n{USER_DIR}\n\n({exc})"
+        ) from exc
+
+    lock = instance_service.InstanceLock()
+    if not lock.acquire():
+        _reuse_running_instance(open_browser)
+        return
+
     db_service.init_db()
     if not (DIST_DIR / "index.html").is_file():
-        raise RuntimeError("Interface React introuvable.")
-    for port in PORTS:
-        if identified(port):
-            if open_browser:
-                webbrowser.open(f"http://{HOST}:{port}")
-            return
+        raise StartupError(
+            "Interface de l'application introuvable (frontend/dist). "
+            "Réinstallez Contrôle Agences."
+        )
+
+    sock = None
     for port in PORTS:
         try:
-            server = create_server(app, host=HOST, port=port, threads=6)
+            sock = _bind(port)
             break
         except OSError:
-            continue
-    else:
-        raise RuntimeError("Les ports 8600, 8601 et 8602 sont déjà utilisés. Impossible de démarrer l’application. Veuillez fermer une autre instance de Contrôle Agences si elle est ouverte, puis réessayer.")
+            logger.info("Port %s indisponible.", port)
+    if sock is None:
+        raise StartupError(PORTS_BUSY_MESSAGE)
+
+    _allowed_hosts.update({f"{HOST}:{port}", f"localhost:{port}"})
+    server = create_server(app, sockets=[sock], threads=6)
     worker = threading.Thread(target=server.run, daemon=True)
     worker.start()
     try:
-        for _ in range(50):
-            if identified(port):
+        for _ in range(100):
+            ready = instance_service.probe(HOST, port)
+            if ready and ready.get("instance") == INSTANCE_ID:
                 break
             if not worker.is_alive():
-                raise RuntimeError("Le serveur n’a pas pu démarrer.")
+                raise StartupError("Le serveur de l’application n’a pas pu démarrer.")
             time.sleep(0.1)
         else:
-            raise RuntimeError("Le serveur ne répond pas.")
-        if open_browser:
-            webbrowser.open(f"http://{HOST}:{port}")
+            raise StartupError("Le serveur de l’application ne répond pas.")
+        instance_service.write_info(port, INSTANCE_ID, VERSION)
+        url = f"http://{HOST}:{port}"
+        logger.info("Contrôle Agences %s démarré sur %s (données : %s)", VERSION, url, USER_DIR)
+        if sys.stdout is not None:
+            print("=" * 60)
+            print(f"  Contrôle Agences {VERSION} est démarré.")
+            print(f"  Adresse : {url}")
+            print("  Pour fermer : bouton « Quitter l’application » dans la page.")
+            print("=" * 60, flush=True)
+        _open_browser(url, open_browser)
         worker.join()
     finally:
         server.close()
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        logger.exception("Échec du démarrage")
-        if sys.platform == "win32":
-            import ctypes
-            ctypes.windll.user32.MessageBoxW(None, str(exc), "Contrôle Agences", 0x10)
-        else:
-            print(str(exc), file=sys.stderr)
-        sys.exit(1)
+    from launcher import run
+
+    run(lambda: main)
