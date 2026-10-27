@@ -1,0 +1,105 @@
+name: V5 Windows build and tests
+
+on:
+  push:
+    branches: [v5-windows]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v5-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-tests:
+    name: Source tests (Linux, Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned packaging dependencies
+        run: python -m pip install -r packaging/requirements.txt
+      - name: Check committed React build
+        run: python packaging/check_frontend.py frontend/dist
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Startup lifecycle (source)
+        run: python tests/check_startup.py
+      - name: User journey (source)
+        run: |
+          python tests/smoke_journey.py create source "$RUNNER_TEMP/données" "$RUNNER_TEMP/state.json"
+          python tests/smoke_journey.py verify source "$RUNNER_TEMP/données" "$RUNNER_TEMP/state.json"
+
+  windows-build:
+    name: Windows build and executable tests
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: py
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Executable "precedente" (dossier + console) : sert aussi au test de mise a jour.
+      - name: Build folder/console executable (as previous version 4.9.0)
+        run: |
+          Set-Content -Encoding ascii version.py 'VERSION = "4.9.0"'
+          ./packaging/build.ps1 -BasePython "${{ steps.py.outputs.python-path }}"
+          git checkout -- version.py
+          Copy-Item -Recurse dist/ControleAgences "$env:RUNNER_TEMP/old-onedir"
+
+      - name: Startup lifecycle - folder/console executable
+        run: .venv-package/Scripts/python.exe tests/check_startup.py "$env:RUNNER_TEMP/old-onedir/ControleAgences.exe" --console --default-dir
+
+      - name: User journey - create records with folder executable
+        run: .venv-package/Scripts/python.exe tests/smoke_journey.py create "$env:RUNNER_TEMP/old-onedir/ControleAgences.exe" "$env:RUNNER_TEMP/Données Sérdar" "$env:RUNNER_TEMP/state.json"
+
+      - name: Build single-file/windowed release
+        run: ./packaging/build.ps1 -Release -BasePython "${{ steps.py.outputs.python-path }}"
+
+      - name: Update - replaced executable keeps saved work
+        run: .venv-package/Scripts/python.exe tests/smoke_journey.py verify dist/ControleAgences.exe "$env:RUNNER_TEMP/Données Sérdar" "$env:RUNNER_TEMP/state.json"
+
+      - name: Update - previous version still open
+        run: .venv-package/Scripts/python.exe tests/smoke_journey.py mismatch "$env:RUNNER_TEMP/old-onedir/ControleAgences.exe" dist/ControleAgences.exe "$env:RUNNER_TEMP/mismatch"
+
+      - name: Startup lifecycle - single-file/windowed executable
+        run: .venv-package/Scripts/python.exe tests/check_startup.py dist/ControleAgences.exe
+
+      - name: Upload release executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ControleAgences-windows
+          path: |
+            dist/ControleAgences.exe
+            dist/build-info-onefile.txt
+          retention-days: 14
+
+      - name: Collect application logs
+        if: failure()
+        run: |
+          $src = Join-Path $env:LOCALAPPDATA "ControleAgences\logs"
+          if (Test-Path $src) { Copy-Item -Recurse $src "$env:RUNNER_TEMP/localappdata/logs" }
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: ${{ runner.temp }}/**/logs/*.log
+          if-no-files-found: ignore

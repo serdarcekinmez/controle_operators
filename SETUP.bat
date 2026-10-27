@@ -34,20 +34,25 @@ echo   Installation de l'application Controle Agences
 echo ============================================================
 echo.
 
-REM --- Detection de Python : "py -3" en priorite, sinon "python" ---
+REM --- Detection de Python ---
+REM Versions preferees d'abord (les plus eprouvees avec les composants de
+REM l'application), puis n'importe quel Python 3.10 ou plus recent.
 set "PY_CMD="
-py -3 --version >nul 2>&1
-if not errorlevel 1 set "PY_CMD=py -3"
-
+for %%V in (3.13 3.12 3.14 3.11 3.10) do (
+    if not defined PY_CMD (
+        py -%%V --version >nul 2>&1
+        if not errorlevel 1 set "PY_CMD=py -%%V"
+    )
+)
 if not defined PY_CMD (
-    python --version >nul 2>&1
+    python -c "import sys; sys.exit(sys.version_info < (3, 10))" >nul 2>&1
     if not errorlevel 1 set "PY_CMD=python"
 )
 
 if not defined PY_CMD (
-    echo [ERREUR] Python est introuvable sur cet ordinateur.
+    echo [ERREUR] Python 3.10 ou plus recent est introuvable sur cet ordinateur.
     echo.
-    echo Installez Python 3.10 ou plus recent depuis :
+    echo Installez Python 3.13 depuis :
     echo     https://www.python.org/downloads/
     echo IMPORTANT : pendant l'installation, cochez la case
     echo     "Add Python to PATH".
@@ -56,7 +61,7 @@ if not defined PY_CMD (
     exit /b 1
 )
 
-echo Python detecte via : %PY_CMD%
+echo Python utilise : %PY_CMD%
 echo.
 
 REM --- [1/3] Environnement virtuel ---

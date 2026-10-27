@@ -1,5 +1,8 @@
-streamlit>=1.30,<2
-reportlab>=4.0,<4.3
-pillow>=10.0,<11
-pypdf>=4.0,<6
+# Serveur local (100 % Python, aucune compilation nécessaire)
+flask>=3.0,<4
+waitress>=3.0,<4
+# PDF, images et fichier de contrôle Excel
+reportlab>=4.0,<5
+pillow>=10.0,<13
+pypdf>=4.0,<7
 openpyxl>=3.1,<4
