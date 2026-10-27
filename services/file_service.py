@@ -147,7 +147,8 @@ def resolve_stored_path(value: str | None) -> Path | None:
     if not value:
         return None
     path = Path(value)
-    if not path.is_absolute() and not PureWindowsPath(value).drive:
+    rooted = path.is_absolute() or PureWindowsPath(value).drive or value.startswith(("/", "\\"))
+    if not rooted:
         return USER_DIR / path
     if path.is_file():
         return path

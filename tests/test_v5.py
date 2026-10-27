@@ -10,7 +10,8 @@ import threading
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-TEMP = tempfile.TemporaryDirectory()
+# Windows : la base peut encore être ouverte à la sortie de l'interpréteur.
+TEMP = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
 os.environ["CONTROLE_AGENCES_DATA_DIR"] = str(Path(TEMP.name) / "Données é")
 sys.path.insert(0, str(ROOT))
 import server
