@@ -233,7 +233,8 @@ with tempfile.TemporaryDirectory() as tmp:
         environ = {k: v for k, v in env.items() if k != "CONTROLE_AGENCES_DATA_DIR"}
         default = Path(os.environ["LOCALAPPDATA"]) / "ControleAgences"
         p = launch("--no-browser", environ=environ)
-        up = wait_until(lambda: identity(8600))
+        # instance.json est écrit juste après la vérification de disponibilité.
+        up = wait_until(lambda: identity(8600) and (default / "instance.json").is_file())
         check("exécutable : données dans %LOCALAPPDATA%\\ControleAgences",
               up and (default / "data" / "controles.db").is_file() and (default / "instance.json").is_file())
         check("exécutable : rien d'écrit à côté de l'exécutable",

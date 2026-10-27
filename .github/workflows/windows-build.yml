@@ -90,12 +90,16 @@ jobs:
             dist/build-info-onefile.txt
           retention-days: 14
 
+      - name: Collect application logs
+        if: failure()
+        run: |
+          $src = Join-Path $env:LOCALAPPDATA "ControleAgences\logs"
+          if (Test-Path $src) { Copy-Item -Recurse $src "$env:RUNNER_TEMP/localappdata/logs" }
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: logs
-          path: |
-            ${{ runner.temp }}/**/logs/*.log
-            ~/AppData/Local/ControleAgences/logs/*.log
+          path: ${{ runner.temp }}/**/logs/*.log
           if-no-files-found: ignore
